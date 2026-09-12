@@ -195,10 +195,12 @@ func (s *buildQueueStateService) handleGetBuildQueueState(w http.ResponseWriter,
 	if err := templates.ExecuteTemplate(w, "get_build_queue_state.html", struct {
 		Now             time.Time
 		PlatformQueues  []*buildqueuestate.PlatformQueueState
+		TokenPools      []*buildqueuestate.TokenPoolState
 		OperationsCount uint32
 	}{
 		Now:             s.clock.Now(),
 		PlatformQueues:  response.PlatformQueues,
+		TokenPools:      response.TokenPools,
 		OperationsCount: operationsCount.PaginationInfo.TotalEntries,
 	}); err != nil {
 		log.Print(err)
@@ -303,6 +305,7 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		renderError(w, status.Error(codes.InvalidArgument, "Invalid filter stage"))
 		return
 	}
+	filterToken := query.Get("filter_token")
 
 	var startAfter *buildqueuestate.ListOperationsRequest_StartAfter
 	if startAfterParameter := query.Get("start_after"); startAfterParameter != "" {
@@ -318,6 +321,7 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 	response, err := s.buildQueue.ListOperations(ctx, &buildqueuestate.ListOperationsRequest{
 		FilterInvocationId: filterInvocationID,
 		FilterStage:        remoteexecution.ExecutionStage_Value(filterStageValue),
+		FilterTokenName:    filterToken,
 		PageSize:           pageSize,
 		StartAfter:         startAfter,
 	})
@@ -341,6 +345,7 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		EndIndex           int
 		FilterInvocationID *anypb.Any
 		FilterStage        string
+		FilterToken        string
 		StartAfter         *buildqueuestate.ListOperationsRequest_StartAfter
 		Operations         []*buildqueuestate.OperationState
 	}{
@@ -350,6 +355,7 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		EndIndex:           int(response.PaginationInfo.StartIndex) + len(response.Operations),
 		FilterInvocationID: filterInvocationID,
 		FilterStage:        filterStageString,
+		FilterToken:        filterToken,
 		StartAfter:         nextStartAfter,
 		Operations:         response.Operations,
 	}); err != nil {

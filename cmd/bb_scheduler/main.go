@@ -127,6 +127,13 @@ func main() {
 		if err := platformQueueWithNoWorkersTimeout.CheckValid(); err != nil {
 			return util.StatusWrap(err, "Invalid platform queue with no workers timeout")
 		}
+		var tokenPoolStartupGracePeriod time.Duration
+		if d := configuration.TokenPoolStartupGracePeriod; d != nil {
+			if err := d.CheckValid(); err != nil {
+				return util.StatusWrap(err, "Invalid token pool startup grace period")
+			}
+			tokenPoolStartupGracePeriod = d.AsDuration()
+		}
 
 		// Create in-memory build queue.
 		// TODO: Make timeouts configurable.
@@ -148,6 +155,7 @@ func main() {
 				},
 				WorkerTaskRetryCount:                9,
 				WorkerWithNoSynchronizationsTimeout: time.Minute,
+				TokenPoolStartupGracePeriod:         tokenPoolStartupGracePeriod,
 			},
 			int(configuration.MaximumMessageSizeBytes),
 			actionRouter,
@@ -180,6 +188,17 @@ func main() {
 				platformQueue.SizeClasses,
 			); err != nil {
 				return util.StatusWrap(err, "Failed to register predeclared platform queue")
+			}
+		}
+
+		// Create token pools.
+		for _, tokenPool := range configuration.TokenPools {
+			instanceName, err := digest.NewInstanceName(tokenPool.InstanceNamePrefix)
+			if err != nil {
+				return util.StatusWrapf(err, "Invalid instance name prefix %#v", tokenPool.InstanceNamePrefix)
+			}
+			if err := buildQueue.RegisterTokenPool(instanceName, tokenPool.Name, tokenPool.Capacity); err != nil {
+				return util.StatusWrapf(err, "Failed to register token pool %#v", tokenPool.Name)
 			}
 		}
 
