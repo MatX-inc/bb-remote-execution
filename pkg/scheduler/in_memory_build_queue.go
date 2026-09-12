@@ -358,6 +358,7 @@ func NewInMemoryBuildQueue(contentAddressableStorage blobstore.BlobAccess, clock
 
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolCapacity)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolInUse)
+		prometheus.MustRegister(inMemoryBuildQueueTokenPoolReserved)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolBlockedTasks)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolRejectionsTotal)
 	})
@@ -917,6 +918,18 @@ func (bq *InMemoryBuildQueue) ListOperations(ctx context.Context, request *build
 		invocationKey = &key
 	}
 
+	var filterTokenPoolKey *tokenPoolKey
+	if request.FilterTokenName != "" {
+		instanceNamePrefix, err := digest.NewInstanceName(request.FilterTokenInstanceNamePrefix)
+		if err != nil {
+			return nil, util.StatusWrapf(err, "Invalid token instance name prefix %#v", request.FilterTokenInstanceNamePrefix)
+		}
+		filterTokenPoolKey = &tokenPoolKey{
+			instanceNamePrefix: instanceNamePrefix,
+			name:               request.FilterTokenName,
+		}
+	}
+
 	bq.enter(bq.clock.Now())
 	defer bq.leave()
 
@@ -925,7 +938,7 @@ func (bq *InMemoryBuildQueue) ListOperations(ctx context.Context, request *build
 	for name, o := range bq.operationsNameMap {
 		if (invocationKey == nil || o.invocation.hasInvocationKey(*invocationKey)) &&
 			(request.FilterStage == remoteexecution.ExecutionStage_UNKNOWN || request.FilterStage == o.task.getStage()) &&
-			(request.FilterTokenName == "" || o.task.hasTokenRequirement(request.FilterTokenName)) {
+			(filterTokenPoolKey == nil || o.task.matchesTokenFilter(*filterTokenPoolKey, request.FilterTokenBlockedOnly)) {
 			nameList = append(nameList, name)
 		}
 	}
@@ -2476,6 +2489,10 @@ type task struct {
 	// Position of the task in the token pools' FIFOs, assigned
 	// the first time it is parked. Zero if it never was.
 	tokenSequence uint64
+	// When set, the task is in the QUEUED stage with its tokens
+	// set aside in the pools, so that assignment cannot fail on
+	// tokens.
+	tokensReserved bool
 
 	executeResponse   *remoteexecution.ExecuteResponse
 	stageChangeWakeup chan struct{}

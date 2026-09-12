@@ -145,6 +145,23 @@ func invertColor(s string) string {
 	return "00"
 }
 
+// tokenFilterQuery renders the ListOperations token filters as a query
+// string fragment ending in "&", or "" when no token filter is set.
+// Templates use it to preserve the filters across pagination links.
+func tokenFilterQuery(instanceNamePrefix, token string, blockedOnly bool) template.URL {
+	if token == "" {
+		return ""
+	}
+	values := url.Values{
+		"filter_token_instance_name_prefix": []string{instanceNamePrefix},
+		"filter_token":                      []string{token},
+	}
+	if blockedOnly {
+		values.Set("filter_token_blocked_only", "1")
+	}
+	return template.URL(values.Encode() + "&")
+}
+
 func renderError(w http.ResponseWriter, err error) {
 	s := status.Convert(err)
 	w.WriteHeader(http_server.StatusCodeFromGRPCCode(s.Code()))
@@ -306,6 +323,8 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		return
 	}
 	filterToken := query.Get("filter_token")
+	filterTokenInstanceNamePrefix := query.Get("filter_token_instance_name_prefix")
+	filterTokenBlockedOnly := query.Get("filter_token_blocked_only") != ""
 
 	var startAfter *buildqueuestate.ListOperationsRequest_StartAfter
 	if startAfterParameter := query.Get("start_after"); startAfterParameter != "" {
@@ -319,11 +338,13 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 
 	ctx := req.Context()
 	response, err := s.buildQueue.ListOperations(ctx, &buildqueuestate.ListOperationsRequest{
-		FilterInvocationId: filterInvocationID,
-		FilterStage:        remoteexecution.ExecutionStage_Value(filterStageValue),
-		FilterTokenName:    filterToken,
-		PageSize:           pageSize,
-		StartAfter:         startAfter,
+		FilterInvocationId:            filterInvocationID,
+		FilterStage:                   remoteexecution.ExecutionStage_Value(filterStageValue),
+		FilterTokenName:               filterToken,
+		FilterTokenInstanceNamePrefix: filterTokenInstanceNamePrefix,
+		FilterTokenBlockedOnly:        filterTokenBlockedOnly,
+		PageSize:                      pageSize,
+		StartAfter:                    startAfter,
 	})
 	if err != nil {
 		renderError(w, util.StatusWrap(err, "Failed to list operations"))
@@ -345,9 +366,12 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		EndIndex           int
 		FilterInvocationID *anypb.Any
 		FilterStage        string
-		FilterToken        string
-		StartAfter         *buildqueuestate.ListOperationsRequest_StartAfter
-		Operations         []*buildqueuestate.OperationState
+		// Query string fragment carrying the token filters, for
+		// links that must preserve them.
+		FilterTokenQuery template.URL
+		FilterToken      string
+		StartAfter       *buildqueuestate.ListOperationsRequest_StartAfter
+		Operations       []*buildqueuestate.OperationState
 	}{
 		BrowserURL:         s.browserURL,
 		Now:                s.clock.Now(),
@@ -355,6 +379,7 @@ func (s *buildQueueStateService) handleListOperations(w http.ResponseWriter, req
 		EndIndex:           int(response.PaginationInfo.StartIndex) + len(response.Operations),
 		FilterInvocationID: filterInvocationID,
 		FilterStage:        filterStageString,
+		FilterTokenQuery:   tokenFilterQuery(filterTokenInstanceNamePrefix, filterToken, filterTokenBlockedOnly),
 		FilterToken:        filterToken,
 		StartAfter:         nextStartAfter,
 		Operations:         response.Operations,

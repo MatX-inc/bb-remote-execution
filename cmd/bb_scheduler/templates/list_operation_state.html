@@ -28,7 +28,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage=QUEUED">Queued</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=QUEUED">Queued</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "EXECUTING"}}
@@ -37,7 +37,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage=EXECUTING">Executing</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=EXECUTING">Executing</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "COMPLETED"}}
@@ -46,7 +46,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage=COMPLETED">Completed</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=COMPLETED">Completed</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "UNKNOWN"}}
@@ -55,7 +55,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage=UNKNOWN">All</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=UNKNOWN">All</a>
 				</li>
 			{{end}}
 		</ul>
@@ -68,7 +68,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage={{.FilterStage}}">◀◀</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage={{.FilterStage}}">◀◀</a>
 				</li>
 			{{end}}
 			<li class="active page-item">
@@ -78,7 +78,7 @@
 			</li>
 			{{if .StartAfter}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{with .FilterToken}}filter_token={{.}}&amp;{{end}}filter_stage={{.FilterStage}}&amp;start_after={{proto_to_json .StartAfter}}">▶</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage={{.FilterStage}}&amp;start_after={{proto_to_json .StartAfter}}">▶</a>
 				</li>
 			{{else}}
 				<li class="disabled page-item">

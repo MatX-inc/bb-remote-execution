@@ -85,7 +85,7 @@
 		<th style="width: 25%">Tokens:</th>
 		<td style="width: 75%">
 			{{range .Operation.TokenRequirements}}
-				<a href="operations?filter_stage=EXECUTING&amp;filter_token={{.Name}}"><span class="badge bg-primary text-nowrap">{{.Name}}={{.Amount}}</span></a>
+				<a href="operations?filter_stage=EXECUTING&amp;filter_token_instance_name_prefix={{$platformQueueName.InstanceNamePrefix}}&amp;filter_token={{.Name}}"><span class="badge bg-primary text-nowrap">{{.Name}}={{.Amount}}</span></a>
 			{{else}}
 				None
 			{{end}}
@@ -94,7 +94,7 @@
 	{{with .Operation.BlockedOnToken}}
 		<tr>
 			<th style="width: 25%">Blocked on token:</th>
-			<td style="width: 75%"><a href="operations?filter_stage=QUEUED&amp;filter_token={{.}}">{{.}}</a></td>
+			<td style="width: 75%"><a href="operations?filter_stage=QUEUED&amp;filter_token_instance_name_prefix={{$platformQueueName.InstanceNamePrefix}}&amp;filter_token={{.}}&amp;filter_token_blocked_only=1">{{.}}</a></td>
 		</tr>
 	{{end}}
 	<tr>

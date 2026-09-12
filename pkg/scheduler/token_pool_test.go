@@ -360,12 +360,17 @@ func successfulExecuteResponse() *remoteexecution.ExecuteResponse {
 }
 
 func (env *tokenTestEnv) synchronize(worker string, platform *remoteexecution.Platform, sizeClass uint32, state *remoteworker.CurrentState) *remoteworker.SynchronizeResponse {
+	return env.synchronizeWithPreference(worker, platform, sizeClass, state, false)
+}
+
+func (env *tokenTestEnv) synchronizeWithPreference(worker string, platform *remoteexecution.Platform, sizeClass uint32, state *remoteworker.CurrentState, preferBeingIdle bool) *remoteworker.SynchronizeResponse {
 	response, err := env.bq.Synchronize(env.ctx, &remoteworker.SynchronizeRequest{
 		WorkerId:           tokenWorkerID(worker),
 		InstanceNamePrefix: "main",
 		Platform:           platform,
 		SizeClass:          sizeClass,
 		CurrentState:       state,
+		PreferBeingIdle:    preferBeingIdle,
 	})
 	require.NoError(env.t, err)
 	return response
@@ -410,10 +415,16 @@ func (env *tokenTestEnv) operation(name string) *buildqueuestate.OperationState 
 }
 
 func (env *tokenTestEnv) listOperations(stage remoteexecution.ExecutionStage_Value, token string) []string {
+	return env.listOperationsUnderPrefix(stage, "main", token, false)
+}
+
+func (env *tokenTestEnv) listOperationsUnderPrefix(stage remoteexecution.ExecutionStage_Value, instanceNamePrefix, token string, blockedOnly bool) []string {
 	response, err := env.bq.ListOperations(env.ctx, &buildqueuestate.ListOperationsRequest{
-		PageSize:        100,
-		FilterStage:     stage,
-		FilterTokenName: token,
+		PageSize:                      100,
+		FilterStage:                   stage,
+		FilterTokenName:               token,
+		FilterTokenInstanceNamePrefix: instanceNamePrefix,
+		FilterTokenBlockedOnly:        blockedOnly,
 	})
 	require.NoError(env.t, err)
 	names := make([]string, 0, len(response.Operations))
@@ -772,6 +783,76 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("vcs", 1, 0)
+}
+
+// When a release lets the head of a FIFO proceed but its platform
+// queue has no idle worker, the tokens are reserved for it. Otherwise
+// a task on another platform queue sharing the pool would take them
+// first and the head would be parked again on every release.
+func TestInMemoryBuildQueueTokenPoolsReservationAcrossPlatformQueues(t *testing.T) {
+	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
+	env.registerPool("vcs", 1)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
+	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
+
+	stream1 := env.execute(&executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"vcs": 1},
+	})
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
+
+	// Park a task for each platform queue, in this order.
+	env.advance(time.Second)
+	stream2 := env.execute(&executeOptions{
+		hash:          tokenActionHash(2),
+		operationName: tokenOperationName(2),
+		tokens:        map[string]uint32{"vcs": 1},
+	})
+	env.advance(time.Second)
+	stream3 := env.execute(&executeOptions{
+		hash:          tokenActionHash(3),
+		operationName: tokenOperationName(3),
+		tokens:        map[string]uint32{"vcs": 1},
+		platform:      otherPlatformForTesting,
+	})
+	env.requirePool("vcs", 1, 2)
+
+	// The first worker completes its task, but wants to go idle
+	// instead of picking up the next one. The second task is
+	// enqueued with the token reserved; the third stays parked.
+	env.advance(time.Second)
+	requireIdle(t, env.synchronizeWithPreference("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse()), true))
+	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
+	env.requirePool("vcs", 0, 1)
+	require.Equal(t, uint32(1), env.pool("vcs").Reserved)
+	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
+	require.Equal(t, "vcs", env.operation(tokenOperationName(3)).BlockedOnToken)
+	require.Equal(t, []string{tokenOperationName(2), tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "vcs"))
+	require.Equal(t, []string{tokenOperationName(3)}, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "vcs", true))
+
+	// The worker of the other platform queue must not be able to
+	// take the reserved token.
+	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
+
+	// The first worker picks up the second task, converting the
+	// reservation.
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
+	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 1, 1)
+	require.Equal(t, uint32(0), env.pool("vcs").Reserved)
+	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
+
+	env.advance(time.Second)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())))
+	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
+	env.requirePool("vcs", 0, 0)
+	require.Equal(t, uint32(1), env.pool("vcs").Reserved)
+	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(3))
+	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 1, 0)
+	require.Equal(t, uint32(0), env.pool("vcs").Reserved)
 }
 
 // Killing a parked operation removes it from the pool's FIFO and
@@ -1188,6 +1269,16 @@ func TestInMemoryBuildQueueTokenPoolsBuildQueueState(t *testing.T) {
 	require.Equal(t, []string{tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "vcs"))
 	require.Len(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""), 4)
 	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, "verdi"))
+	// Filters match on the pool key, not just the name. Only
+	// parked operations match when asked for blocked ones.
+	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_UNKNOWN, "other", "vcs", false))
+	require.Equal(t, []string{tokenOperationName(2)}, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "dc", true))
+	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "vcs", true))
+	_, err = env.bq.ListOperations(env.ctx, &buildqueuestate.ListOperationsRequest{
+		FilterTokenName:               "vcs",
+		FilterTokenInstanceNamePrefix: "//bad",
+	})
+	testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Invalid token instance name prefix \"//bad\": Instance name contains redundant slashes"), err)
 
 	// The worker's view of the action lacks the token properties,
 	// while the digest is the client's.

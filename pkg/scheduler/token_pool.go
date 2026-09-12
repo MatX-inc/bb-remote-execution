@@ -15,6 +15,7 @@ import (
 	status_pb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // tokenPropertyPrefix is the prefix of the platform properties through
@@ -49,6 +50,17 @@ var (
 		},
 		[]string{"instance_name_prefix", "token"},
 	)
+	inMemoryBuildQueueTokenPoolReserved = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "buildbarn",
+			Subsystem: "builder",
+			Name:      "in_memory_build_queue_token_pool_reserved",
+			Help:      "Number of tokens in a token pool reserved for tasks that were taken off the pool's FIFO, but are still waiting for a worker.",
+		},
+		[]string{"instance_name_prefix", "token"},
+	)
+	// The token name is client-provided and unbounded for unknown
+	// pools, so it is not a label.
 	inMemoryBuildQueueTokenPoolRejectionsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "buildbarn",
@@ -56,7 +68,7 @@ var (
 			Name:      "in_memory_build_queue_token_pool_rejections_total",
 			Help:      "Number of Execute() requests rejected because they referenced an unknown token pool, or required more tokens than the pool's capacity.",
 		},
-		[]string{"instance_name_prefix", "token", "reason"},
+		[]string{"instance_name_prefix", "reason"},
 	)
 )
 
@@ -80,6 +92,15 @@ type tokenPool struct {
 	// is set and the single place where it is cleared.
 	inUse uint32
 
+	// Tokens promised to tasks that unblock() took off the FIFO
+	// and enqueued because no idle worker was available. Without
+	// the reservation, a task on another platform queue sharing
+	// the pool could take the tokens first and the unblocked
+	// task would be parked again, defeating the FIFO. Invariant:
+	// reserved equals the sum of the amounts over tasks with
+	// tokensReserved set. Converted into inUse on assignment.
+	reserved uint32
+
 	// Tasks in the QUEUED stage that could not be assigned to a
 	// worker because this pool could not satisfy them, ordered by
 	// task.tokenSequence: the order in which they first became
@@ -91,6 +112,7 @@ type tokenPool struct {
 
 	capacityGauge     prometheus.Gauge
 	inUseGauge        prometheus.Gauge
+	reservedGauge     prometheus.Gauge
 	blockedTasksGauge prometheus.Gauge
 }
 
@@ -108,11 +130,11 @@ type parsedTokenRequirement struct {
 }
 
 // stripTokenRequirements extracts the "token:<name>" platform
-// properties from an action. If any are present, it returns a shallow
-// copy of the action whose Platform lacks them, so that neither
-// routing nor workers observe them. The relative order of the
-// remaining properties is preserved, keeping the platform in the
-// normal form that platform.NewKey() requires.
+// properties from an action. If any are present, it returns a copy of
+// the action whose Platform lacks them, so that neither routing nor
+// workers observe them. The relative order of the remaining
+// properties is preserved, keeping the platform in the normal form
+// that platform.NewKey() requires.
 func stripTokenRequirements(action *remoteexecution.Action) (*remoteexecution.Action, []parsedTokenRequirement, error) {
 	properties := action.GetPlatform().GetProperties()
 	var requirements []parsedTokenRequirement
@@ -149,11 +171,11 @@ func stripTokenRequirements(action *remoteexecution.Action) (*remoteexecution.Ac
 	if requirements == nil {
 		return action, nil, nil
 	}
-	strippedAction := *action
+	strippedAction := proto.Clone(action).(*remoteexecution.Action)
 	strippedAction.Platform = &remoteexecution.Platform{
 		Properties: remaining,
 	}
-	return &strippedAction, requirements, nil
+	return strippedAction, requirements, nil
 }
 
 // RegisterTokenPool adds a token pool to InMemoryBuildQueue. Pools are
@@ -181,10 +203,12 @@ func (bq *InMemoryBuildQueue) RegisterTokenPool(instanceNamePrefix digest.Instan
 		capacity:          capacity,
 		capacityGauge:     inMemoryBuildQueueTokenPoolCapacity.WithLabelValues(labels...),
 		inUseGauge:        inMemoryBuildQueueTokenPoolInUse.WithLabelValues(labels...),
+		reservedGauge:     inMemoryBuildQueueTokenPoolReserved.WithLabelValues(labels...),
 		blockedTasksGauge: inMemoryBuildQueueTokenPoolBlockedTasks.WithLabelValues(labels...),
 	}
 	p.capacityGauge.Set(float64(capacity))
 	p.inUseGauge.Set(0)
+	p.reservedGauge.Set(0)
 	p.blockedTasksGauge.Set(0)
 	bq.tokenPools[key] = p
 	return nil
@@ -204,11 +228,11 @@ func (bq *InMemoryBuildQueue) resolveTokenRequirements(instanceNamePrefix digest
 			name:               r.name,
 		}]
 		if !ok {
-			inMemoryBuildQueueTokenPoolRejectionsTotal.WithLabelValues(instanceNamePrefix.String(), r.name, "UnknownPool").Inc()
+			inMemoryBuildQueueTokenPoolRejectionsTotal.WithLabelValues(instanceNamePrefix.String(), "UnknownPool").Inc()
 			return nil, status.Errorf(codes.FailedPrecondition, "No token pool named %#v exists for instance name prefix %#v", r.name, instanceNamePrefix.String())
 		}
 		if r.amount > p.capacity {
-			inMemoryBuildQueueTokenPoolRejectionsTotal.WithLabelValues(instanceNamePrefix.String(), r.name, "ExceedsCapacity").Inc()
+			inMemoryBuildQueueTokenPoolRejectionsTotal.WithLabelValues(instanceNamePrefix.String(), "ExceedsCapacity").Inc()
 			return nil, status.Errorf(codes.FailedPrecondition, "Action requires %d tokens of pool %#v for instance name prefix %#v, which exceeds its capacity of %d", r.amount, r.name, instanceNamePrefix.String(), p.capacity)
 		}
 		requirements = append(requirements, tokenRequirement{
@@ -242,6 +266,7 @@ func (bq *InMemoryBuildQueue) getTokenPoolStates() []*buildqueuestate.TokenPoolS
 			Name:               p.key.name,
 			Capacity:           p.capacity,
 			InUse:              p.inUse,
+			Reserved:           p.reserved,
 			BlockedTasksCount:  uint32(len(p.blocked)),
 		})
 	}
@@ -269,6 +294,11 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 	if bq.tokenPoolStartupGraceActive {
 		return t.tokenRequirements[0].pool
 	}
+	if t.tokensReserved {
+		// The pools already set tokens aside for this task
+		// when it was taken off a FIFO.
+		return nil
+	}
 	for _, r := range t.tokenRequirements {
 		p := r.pool
 		// Tasks are served in the order in which they first
@@ -277,7 +307,7 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 		if len(p.blocked) > 0 && p.blocked[0] != t && (t.tokenSequence == 0 || p.blocked[0].tokenSequence < t.tokenSequence) {
 			return p
 		}
-		if p.inUse+r.amount > p.capacity {
+		if p.inUse+p.reserved+r.amount > p.capacity {
 			return p
 		}
 	}
@@ -347,29 +377,66 @@ func (p *tokenPool) unblock(bq *InMemoryBuildQueue) {
 		if q == p {
 			return
 		}
-		p.removeBlockedTask(t)
 		if q != nil {
+			// Blocked on another pool: wait there, keeping
+			// the token sequence. A task requiring several
+			// pools may bounce between their FIFOs on
+			// successive releases when the pools fill up
+			// alternately. Each bounce is triggered by a
+			// release and settles as soon as all pools have
+			// room, which is accepted for now.
+			p.removeBlockedTask(t)
 			q.insertBlockedTask(t)
 			continue
 		}
 		// The task is either handed to an idle worker, which
-		// acquires its tokens, or enqueued, in which case the
-		// assignment gate reconsiders it. Keep the invocation
-		// active across the transition, so that it is neither
-		// deactivated nor removed.
+		// acquires its tokens, or enqueued with the tokens
+		// reserved, so that no other task takes them before a
+		// worker reaches it. The task is unparked afterwards,
+		// so that its invocation stays active throughout and
+		// is neither deactivated nor removed.
+		t.reserveTokens()
 		t.assignOrEnqueue(bq, false)
-		for _, o := range t.operations {
-			o.invocation.decrementBlockedOperationsCount()
-		}
+		t.unpark()
 	}
 }
 
-// acquireTokens is called when a task is assigned to a worker. The
-// caller has already established that the pools can satisfy the
-// task, except when a queued task is completed administratively
-// through a temporary worker; the tokens are released immediately
-// afterwards in that case.
+// reserveTokens sets tokens aside for a task that passed the gate but
+// has no worker yet.
+func (t *task) reserveTokens() {
+	if t.tokensReserved {
+		panic("Task already has tokens reserved")
+	}
+	t.tokensReserved = true
+	for _, r := range t.tokenRequirements {
+		r.pool.reserved += r.amount
+		r.pool.reservedGauge.Set(float64(r.pool.reserved))
+	}
+}
+
+// dropReservation is the inverse of reserveTokens(). It is a no-op for
+// tasks without a reservation.
+func (t *task) dropReservation() {
+	if !t.tokensReserved {
+		return
+	}
+	t.tokensReserved = false
+	for _, r := range t.tokenRequirements {
+		if r.pool.reserved < r.amount {
+			panic("Token pool reserved count invalid")
+		}
+		r.pool.reserved -= r.amount
+		r.pool.reservedGauge.Set(float64(r.pool.reserved))
+	}
+}
+
+// acquireTokens is called when a task is assigned to a worker. Any
+// reservation is converted into tokens in use. The caller has already
+// established that the pools can satisfy the task, except when a
+// queued task is completed administratively through a temporary
+// worker; the tokens are released immediately afterwards in that case.
 func (t *task) acquireTokens() {
+	t.dropReservation()
 	for _, r := range t.tokenRequirements {
 		r.pool.inUse += r.amount
 		r.pool.inUseGauge.Set(float64(r.pool.inUse))
@@ -405,6 +472,7 @@ func (t *task) park(bq *InMemoryBuildQueue, p *tokenPool) {
 		bq.lastTokenSequence++
 		t.tokenSequence = bq.lastTokenSequence
 	}
+	t.dropReservation()
 	for _, o := range t.operations {
 		o.invocation.incrementBlockedOperationsCount()
 		if o.queueIndex >= 0 {
@@ -415,8 +483,8 @@ func (t *task) park(bq *InMemoryBuildQueue, p *tokenPool) {
 }
 
 // unpark removes a parked task from its pool's FIFO. The caller has
-// already moved the task's operations to the EXECUTING stage, so
-// that invocations remain active.
+// already assigned or enqueued the task, so that its invocations
+// remain active when the blocked operations are no longer counted.
 func (t *task) unpark() {
 	t.blockedPool.removeBlockedTask(t)
 	for _, o := range t.operations {
@@ -424,9 +492,15 @@ func (t *task) unpark() {
 	}
 }
 
-func (t *task) hasTokenRequirement(name string) bool {
+// matchesTokenFilter implements the token related filters of
+// ListOperations(): the task must require the named pool and, if
+// requested, be parked on it.
+func (t *task) matchesTokenFilter(key tokenPoolKey, blockedOnly bool) bool {
+	if blockedOnly {
+		return t.blockedPool != nil && t.blockedPool.key == key
+	}
 	for _, r := range t.tokenRequirements {
-		if r.pool.key.name == name {
+		if r.pool.key == key {
 			return true
 		}
 	}
@@ -493,10 +567,29 @@ func (bq *InMemoryBuildQueue) checkTokenInvariants() {
 		}
 	}
 
+	expectedReserved := map[*tokenPool]uint32{}
+	seenTasks := map[*task]struct{}{}
+	for _, o := range bq.operationsNameMap {
+		t := o.task
+		if _, ok := seenTasks[t]; ok || !t.tokensReserved {
+			continue
+		}
+		seenTasks[t] = struct{}{}
+		if t.currentWorker != nil || t.blockedPool != nil || t.executeResponse != nil {
+			panic("Task with reserved tokens is not waiting in a queue")
+		}
+		for _, r := range t.tokenRequirements {
+			expectedReserved[r.pool] += r.amount
+		}
+	}
+
 	expectedBlocked := map[*invocation]uint32{}
 	for _, p := range bq.tokenPools {
 		if p.inUse != expectedInUse[p] {
 			panic(fmt.Sprintf("Token pool %#v has %d tokens in use, but executing tasks hold %d", p.key.name, p.inUse, expectedInUse[p]))
+		}
+		if p.reserved != expectedReserved[p] {
+			panic(fmt.Sprintf("Token pool %#v has %d tokens reserved, but queued tasks reserve %d", p.key.name, p.reserved, expectedReserved[p]))
 		}
 		for idx, t := range p.blocked {
 			if t.blockedPool != p {

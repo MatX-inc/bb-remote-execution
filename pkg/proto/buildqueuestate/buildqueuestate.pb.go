@@ -765,6 +765,7 @@ type TokenPoolState struct {
 	Capacity           uint32                 `protobuf:"varint,3,opt,name=capacity,proto3" json:"capacity,omitempty"`
 	InUse              uint32                 `protobuf:"varint,4,opt,name=in_use,json=inUse,proto3" json:"in_use,omitempty"`
 	BlockedTasksCount  uint32                 `protobuf:"varint,5,opt,name=blocked_tasks_count,json=blockedTasksCount,proto3" json:"blocked_tasks_count,omitempty"`
+	Reserved           uint32                 `protobuf:"varint,6,opt,name=reserved,proto3" json:"reserved,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -830,6 +831,13 @@ func (x *TokenPoolState) GetInUse() uint32 {
 func (x *TokenPoolState) GetBlockedTasksCount() uint32 {
 	if x != nil {
 		return x.BlockedTasksCount
+	}
+	return 0
+}
+
+func (x *TokenPoolState) GetReserved() uint32 {
+	if x != nil {
+		return x.Reserved
 	}
 	return 0
 }
@@ -1095,14 +1103,16 @@ func (x *GetOperationResponse) GetOperation() *OperationState {
 }
 
 type ListOperationsRequest struct {
-	state              protoimpl.MessageState            `protogen:"open.v1"`
-	PageSize           uint32                            `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
-	StartAfter         *ListOperationsRequest_StartAfter `protobuf:"bytes,2,opt,name=start_after,json=startAfter,proto3" json:"start_after,omitempty"`
-	FilterInvocationId *anypb.Any                        `protobuf:"bytes,3,opt,name=filter_invocation_id,json=filterInvocationId,proto3" json:"filter_invocation_id,omitempty"`
-	FilterStage        v2.ExecutionStage_Value           `protobuf:"varint,4,opt,name=filter_stage,json=filterStage,proto3,enum=build.bazel.remote.execution.v2.ExecutionStage_Value" json:"filter_stage,omitempty"`
-	FilterTokenName    string                            `protobuf:"bytes,5,opt,name=filter_token_name,json=filterTokenName,proto3" json:"filter_token_name,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                         protoimpl.MessageState            `protogen:"open.v1"`
+	PageSize                      uint32                            `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	StartAfter                    *ListOperationsRequest_StartAfter `protobuf:"bytes,2,opt,name=start_after,json=startAfter,proto3" json:"start_after,omitempty"`
+	FilterInvocationId            *anypb.Any                        `protobuf:"bytes,3,opt,name=filter_invocation_id,json=filterInvocationId,proto3" json:"filter_invocation_id,omitempty"`
+	FilterStage                   v2.ExecutionStage_Value           `protobuf:"varint,4,opt,name=filter_stage,json=filterStage,proto3,enum=build.bazel.remote.execution.v2.ExecutionStage_Value" json:"filter_stage,omitempty"`
+	FilterTokenName               string                            `protobuf:"bytes,5,opt,name=filter_token_name,json=filterTokenName,proto3" json:"filter_token_name,omitempty"`
+	FilterTokenInstanceNamePrefix string                            `protobuf:"bytes,6,opt,name=filter_token_instance_name_prefix,json=filterTokenInstanceNamePrefix,proto3" json:"filter_token_instance_name_prefix,omitempty"`
+	FilterTokenBlockedOnly        bool                              `protobuf:"varint,7,opt,name=filter_token_blocked_only,json=filterTokenBlockedOnly,proto3" json:"filter_token_blocked_only,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *ListOperationsRequest) Reset() {
@@ -1168,6 +1178,20 @@ func (x *ListOperationsRequest) GetFilterTokenName() string {
 		return x.FilterTokenName
 	}
 	return ""
+}
+
+func (x *ListOperationsRequest) GetFilterTokenInstanceNamePrefix() string {
+	if x != nil {
+		return x.FilterTokenInstanceNamePrefix
+	}
+	return ""
+}
+
+func (x *ListOperationsRequest) GetFilterTokenBlockedOnly() bool {
+	if x != nil {
+		return x.FilterTokenBlockedOnly
+	}
+	return false
 }
 
 type ListOperationsResponse struct {
@@ -2309,13 +2333,14 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	" \x01(\rR\x16blockedOperationsCount\x1aK\n" +
 	"\x15InvocationObjectCount\x12\x16\n" +
 	"\x06direct\x18\x01 \x01(\rR\x06direct\x12\x1a\n" +
-	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xb9\x01\n" +
+	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xd5\x01\n" +
 	"\x0eTokenPoolState\x120\n" +
 	"\x14instance_name_prefix\x18\x01 \x01(\tR\x12instanceNamePrefix\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\bcapacity\x18\x03 \x01(\rR\bcapacity\x12\x15\n" +
 	"\x06in_use\x18\x04 \x01(\rR\x05inUse\x12.\n" +
-	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\"~\n" +
+	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\x12\x1a\n" +
+	"\breserved\x18\x06 \x01(\rR\breserved\"~\n" +
 	"\x14InvocationChildState\x12$\n" +
 	"\x02id\x18\x01 \x01(\v2\x14.google.protobuf.AnyR\x02id\x12@\n" +
 	"\x05state\x18\x02 \x01(\v2*.buildbarn.buildqueuestate.InvocationStateR\x05state\"\xac\x02\n" +
@@ -2337,14 +2362,16 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"\x13GetOperationRequest\x12%\n" +
 	"\x0eoperation_name\x18\x01 \x01(\tR\roperationName\"_\n" +
 	"\x14GetOperationResponse\x12G\n" +
-	"\toperation\x18\x01 \x01(\v2).buildbarn.buildqueuestate.OperationStateR\toperation\"\x95\x03\n" +
+	"\toperation\x18\x01 \x01(\v2).buildbarn.buildqueuestate.OperationStateR\toperation\"\x9a\x04\n" +
 	"\x15ListOperationsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\rR\bpageSize\x12\\\n" +
 	"\vstart_after\x18\x02 \x01(\v2;.buildbarn.buildqueuestate.ListOperationsRequest.StartAfterR\n" +
 	"startAfter\x12F\n" +
 	"\x14filter_invocation_id\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\x12filterInvocationId\x12X\n" +
 	"\ffilter_stage\x18\x04 \x01(\x0e25.build.bazel.remote.execution.v2.ExecutionStage.ValueR\vfilterStage\x12*\n" +
-	"\x11filter_token_name\x18\x05 \x01(\tR\x0ffilterTokenName\x1a3\n" +
+	"\x11filter_token_name\x18\x05 \x01(\tR\x0ffilterTokenName\x12H\n" +
+	"!filter_token_instance_name_prefix\x18\x06 \x01(\tR\x1dfilterTokenInstanceNamePrefix\x129\n" +
+	"\x19filter_token_blocked_only\x18\a \x01(\bR\x16filterTokenBlockedOnly\x1a3\n" +
 	"\n" +
 	"StartAfter\x12%\n" +
 	"\x0eoperation_name\x18\x01 \x01(\tR\roperationName\"\xb7\x01\n" +
