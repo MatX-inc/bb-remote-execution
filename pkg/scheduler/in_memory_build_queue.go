@@ -227,6 +227,14 @@ type InMemoryBuildQueueConfiguration struct {
 	// worker may remain registered by InMemoryBuildQueue when no
 	// Synchronize() calls are received.
 	WorkerWithNoSynchronizationsTimeout time.Duration
+
+	// TokenPoolStartupGracePeriod specifies for how long after
+	// creation no token-requiring task is assigned to a worker.
+	// Workers that were executing such tasks before a scheduler
+	// restart still hold tokens the new process does not know
+	// about, until they resynchronize and are told to go idle.
+	// Zero disables the grace period.
+	TokenPoolStartupGracePeriod time.Duration
 }
 
 // InMemoryBuildQueue implements a BuildQueue that can distribute
@@ -258,6 +266,17 @@ type InMemoryBuildQueue struct {
 	// This map is used to deduplicate concurrent requests for the
 	// same action.
 	inFlightDeduplicationMap map[digest.Digest]*task
+
+	// Token pools over which tasks with token requirements are
+	// scheduled, keyed by instance name prefix and token name.
+	tokenPools map[tokenPoolKey]*tokenPool
+	// While true, token-requiring tasks are parked instead of
+	// being assigned to workers. Cleared by the cleanup queue.
+	tokenPoolStartupGraceActive     bool
+	tokenPoolStartupGraceCleanupKey cleanupKey
+	// Sequence number handed to tasks the first time they are
+	// parked on a token pool. It orders the pools' FIFOs.
+	lastTokenSequence uint64
 
 	// Time value that is updated during every mutation of build
 	// queue state. This reduces the number of clock accesses, while
@@ -336,27 +355,39 @@ func NewInMemoryBuildQueue(contentAddressableStorage blobstore.BlobAccess, clock
 		prometheus.MustRegister(inMemoryBuildQueueWorkersRemovedTotal)
 
 		prometheus.MustRegister(inMemoryBuildQueueWorkerInvocationStickinessRetained)
+
+		prometheus.MustRegister(inMemoryBuildQueueTokenPoolCapacity)
+		prometheus.MustRegister(inMemoryBuildQueueTokenPoolInUse)
+		prometheus.MustRegister(inMemoryBuildQueueTokenPoolBlockedTasks)
+		prometheus.MustRegister(inMemoryBuildQueueTokenPoolRejectionsTotal)
 	})
 
-	return &InMemoryBuildQueue{
+	now := clock.Now()
+	bq := &InMemoryBuildQueue{
 		Provider: capabilities.NewAuthorizingProvider(inMemoryBuildQueueCapabilitiesProvider, executeAuthorizer),
 
 		contentAddressableStorage:           contentAddressableStorage,
 		clock:                               clock,
 		uuidGenerator:                       uuidGenerator,
 		configuration:                       configuration,
-		platformQueueAbsenceHardFailureTime: clock.Now().Add(configuration.PlatformQueueWithNoWorkersTimeout),
+		platformQueueAbsenceHardFailureTime: now.Add(configuration.PlatformQueueWithNoWorkersTimeout),
 		maximumMessageSizeBytes:             maximumMessageSizeBytes,
 		actionRouter:                        actionRouter,
 		platformQueuesTrie:                  platform.NewTrie(),
 		sizeClassQueues:                     map[sizeClassKey]*sizeClassQueue{},
 		operationsNameMap:                   map[string]*operation{},
 		inFlightDeduplicationMap:            map[digest.Digest]*task{},
+		tokenPools:                          map[tokenPoolKey]*tokenPool{},
 		executeAuthorizer:                   executeAuthorizer,
 		modifyDrainsAuthorizer:              modifyDrainsAuthorizer,
 		killOperationsAuthorizer:            killOperationsAuthorizer,
 		synchronizeAuthorizer:               synchronizeAuthorizer,
 	}
+	if gracePeriod := configuration.TokenPoolStartupGracePeriod; gracePeriod > 0 {
+		bq.tokenPoolStartupGraceActive = true
+		bq.cleanupQueue.add(&bq.tokenPoolStartupGraceCleanupKey, now.Add(gracePeriod), bq.endTokenPoolStartupGrace)
+	}
+	return bq
 }
 
 var (
@@ -454,7 +485,13 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 	if err != nil {
 		return util.StatusWrap(err, "Failed to obtain action")
 	}
-	action := actionMessage.(*remoteexecution.Action)
+	// Token requirements are stripped before the platform key is
+	// computed and before routing, so that neither the platform
+	// queue selection nor workers observe them.
+	action, parsedTokenRequirements, err := stripTokenRequirements(actionMessage.(*remoteexecution.Action))
+	if err != nil {
+		return err
+	}
 	platformKey, err := platform.NewKey(instanceName, action.Platform)
 	if err != nil {
 		return err
@@ -509,7 +546,15 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 		case remoteexecution.ExecutionStage_QUEUED:
 			// The request has been deduplicated against a
 			// task that is still queued.
-			o.enqueue()
+			if t.blockedPool != nil {
+				// The task is parked on a token pool,
+				// so none of its operations are in an
+				// invocation heap. Attach without
+				// enqueueing.
+				i.incrementBlockedOperationsCount()
+			} else {
+				o.enqueue()
+			}
 		case remoteexecution.ExecutionStage_EXECUTING:
 			// The request has been deduplicated against a
 			// task that is already in the executing stage.
@@ -542,6 +587,11 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 		return status.Errorf(code, "No workers exist for instance name prefix %#v platform %s", platformKey.GetInstanceNamePrefix().String(), platformKey.GetPlatformString())
 	}
 	pq := bq.platformQueues[platformQueueIndex]
+	tokenRequirements, err := bq.resolveTokenRequirements(pq.platformKey.GetInstanceNamePrefix(), parsedTokenRequirements)
+	if err != nil {
+		initialSizeClassSelector.Abandoned()
+		return err
+	}
 	sizeClassIndex, expectedDuration, timeout, initialSizeClassLearner := initialSizeClassSelector.Select(pq.sizeClasses)
 	scq := pq.sizeClassQueues[sizeClassIndex]
 
@@ -563,6 +613,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 		targetID:                requestMetadata.GetTargetId(),
 		expectedDuration:        expectedDuration,
 		initialSizeClassLearner: initialSizeClassLearner,
+		tokenRequirements:       tokenRequirements,
 		stageChangeWakeup:       make(chan struct{}),
 	}
 	if !action.DoNotCache {
@@ -571,7 +622,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 	}
 	i := scq.getOrCreateInvocation(bq, invocationKeys)
 	o := t.newOperation(bq, in.ExecutionPolicy.GetPriority(), i, false)
-	t.schedule(bq)
+	t.schedule(bq, true)
 	return o.waitExecution(bq, out)
 }
 
@@ -756,6 +807,7 @@ func (bq *InMemoryBuildQueue) ListPlatformQueues(ctx context.Context, request *e
 	}
 	return &buildqueuestate.ListPlatformQueuesResponse{
 		PlatformQueues: platformQueues,
+		TokenPools:     bq.getTokenPoolStates(),
 	}, nil
 }
 
@@ -846,7 +898,7 @@ func (bq *InMemoryBuildQueue) KillOperations(ctx context.Context, request *build
 		if len(scq.workers) > 0 {
 			return nil, status.Error(codes.FailedPrecondition, "Cannot kill operations, as size class queue still has workers")
 		}
-		scq.rootInvocation.cancelAllQueuedOperations(bq, request.Status)
+		scq.cancelAllQueuedOperations(bq, request.Status)
 		return &emptypb.Empty{}, nil
 	default:
 		return nil, status.Error(codes.InvalidArgument, "Unknown filter provided")
@@ -872,7 +924,8 @@ func (bq *InMemoryBuildQueue) ListOperations(ctx context.Context, request *build
 	nameList := make([]string, 0, len(bq.operationsNameMap))
 	for name, o := range bq.operationsNameMap {
 		if (invocationKey == nil || o.invocation.hasInvocationKey(*invocationKey)) &&
-			(request.FilterStage == remoteexecution.ExecutionStage_UNKNOWN || request.FilterStage == o.task.getStage()) {
+			(request.FilterStage == remoteexecution.ExecutionStage_UNKNOWN || request.FilterStage == o.task.getStage()) &&
+			(request.FilterTokenName == "" || o.task.hasTokenRequirement(request.FilterTokenName)) {
 			nameList = append(nameList, name)
 		}
 	}
@@ -1299,6 +1352,9 @@ func (bq *InMemoryBuildQueue) enter(t time.Time) {
 
 // leave releases the lock on the InMemoryBuildQueue.
 func (bq *InMemoryBuildQueue) leave() {
+	if enableTokenInvariantChecks {
+		bq.checkTokenInvariants()
+	}
 	bq.lock.Unlock()
 }
 
@@ -1553,7 +1609,7 @@ func (scq *sizeClassQueue) getKey() sizeClassKey {
 // queue and all associated queued operations to be removed from the
 // InMemoryBuildQueue.
 func (scq *sizeClassQueue) remove(bq *InMemoryBuildQueue) {
-	scq.rootInvocation.cancelAllQueuedOperations(
+	scq.cancelAllQueuedOperations(
 		bq,
 		status.New(
 			codes.Unavailable,
@@ -1582,6 +1638,20 @@ func (scq *sizeClassQueue) remove(bq *InMemoryBuildQueue) {
 		bq.platformQueues = bq.platformQueues[:newLength]
 		bq.platformQueuesTrie.Set(lastPQ.platformKey, index)
 		bq.platformQueuesTrie.Remove(pq.platformKey)
+	}
+}
+
+// cancelAllQueuedOperations completes every operation in the QUEUED
+// stage that belongs to this size class queue, including tasks parked
+// on token pools. Completing a parked task runs the token release
+// path, which may move other parked tasks of this queue into the
+// heaps, so both kinds are cancelled alternately until none remain.
+func (scq *sizeClassQueue) cancelAllQueuedOperations(bq *InMemoryBuildQueue, status *status_pb.Status) {
+	for {
+		scq.rootInvocation.cancelAllQueuedOperations(bq, status)
+		if !bq.cancelBlockedTasks(scq, status) {
+			return
+		}
 	}
 }
 
@@ -1852,6 +1922,11 @@ type invocation struct {
 	// EXECUTING stage.
 	executingWorkers     map[*worker]int
 	lastOperationStarted time.Time
+	// Number of operations that are part of this invocation or
+	// its descendants that are in the QUEUED stage, but are
+	// parked on a token pool and therefore not present in any
+	// queuedOperations heap.
+	blockedOperationsCount uint32
 	// The time at which the last executing operation was completed.
 	// This value is used to determine which invocations are the
 	// best candidates for rebalancing idle synchronizing workers.
@@ -1876,7 +1951,7 @@ func (i *invocation) isQueued() bool {
 // executing operations. These are generally the ones that users of the
 // BuildQueueState service want to view.
 func (i *invocation) isActive() bool {
-	return i.isQueued() || len(i.executingWorkers) > 0
+	return i.isQueued() || len(i.executingWorkers) > 0 || i.blockedOperationsCount > 0
 }
 
 // removeIfEmpty checks whether the invocation is empty (i.e., not
@@ -1926,6 +2001,7 @@ func (i *invocation) getInvocationState(bq *InMemoryBuildQueue) *buildqueuestate
 		ExecutingWorkersCount:         uint32(len(i.executingWorkers)),
 		IdleWorkersCount:              i.idleWorkersCount,
 		IdleSynchronizingWorkersCount: uint32(len(i.idleSynchronizingWorkers)),
+		BlockedOperationsCount:        i.blockedOperationsCount,
 	}
 }
 
@@ -2290,7 +2366,13 @@ func (o *operation) remove(bq *InMemoryBuildQueue) {
 		i := o.invocation
 		switch t.getStage() {
 		case remoteexecution.ExecutionStage_QUEUED:
-			o.removeQueuedFromInvocation()
+			if t.blockedPool != nil {
+				// The task is parked on a token pool,
+				// so the operation is not in a heap.
+				i.decrementBlockedOperationsCount()
+			} else {
+				o.removeQueuedFromInvocation()
+			}
 			for i.removeIfEmpty() {
 				i = i.parent
 			}
@@ -2323,6 +2405,10 @@ func (o *operation) getOperationState(bq *InMemoryBuildQueue) *buildqueuestate.O
 		Priority:           o.priority,
 		InstanceNameSuffix: t.desiredState.InstanceNameSuffix,
 		DigestFunction:     t.desiredState.DigestFunction,
+		TokenRequirements:  t.getTokenRequirementsState(),
+	}
+	if p := t.blockedPool; p != nil {
+		s.BlockedOnToken = p.key.name
 	}
 	switch t.getStage() {
 	case remoteexecution.ExecutionStage_QUEUED:
@@ -2380,6 +2466,17 @@ type task struct {
 	initialSizeClassLearner initialsizeclass.Learner
 	mayExistWithoutWaiters  bool
 
+	// Tokens the task holds while it has a current worker. Tokens
+	// belong to the task rather than its operations, as in-flight
+	// deduplication makes one task serve several operations.
+	tokenRequirements []tokenRequirement
+	// When set, the task is in the QUEUED stage, but parked in
+	// this pool's FIFO instead of in the invocation heaps.
+	blockedPool *tokenPool
+	// Position of the task in the token pools' FIFOs, assigned
+	// the first time it is parked. Zero if it never was.
+	tokenSequence uint64
+
 	executeResponse   *remoteexecution.ExecuteResponse
 	stageChangeWakeup chan struct{}
 }
@@ -2417,8 +2514,28 @@ func (t *task) reportNonFinalStageChange() {
 // schedule a task. This function will first attempt to directly assign
 // a task to an idle worker that is synchronizing against the scheduler.
 // When no such worker exists, it will queue the operation, so that a
-// worker may pick it up later.
-func (t *task) schedule(bq *InMemoryBuildQueue) {
+// worker may pick it up later. Tasks whose token requirements cannot
+// be satisfied are parked on the token pool instead.
+//
+// initial must be false when a task that already entered the QUEUED
+// stage is scheduled again after being unparked, so that it is not
+// counted as scheduled twice.
+func (t *task) schedule(bq *InMemoryBuildQueue, initial bool) {
+	if p := bq.firstInsufficientPool(t); p != nil {
+		if initial {
+			t.registerQueuedStageStarted(bq, &t.getCurrentSizeClassQueue().tasksScheduledQueue)
+		}
+		t.park(bq, p)
+		return
+	}
+	t.assignOrEnqueue(bq, initial)
+}
+
+// assignOrEnqueue is the part of schedule() that runs once the token
+// gate has been passed. tokenPool.unblock() calls it directly for a
+// task it has just taken off its FIFO, as re-running the gate would
+// see the next task at the head of the FIFO and park it again.
+func (t *task) assignOrEnqueue(bq *InMemoryBuildQueue, initial bool) {
 	// Check whether there are idle workers that are synchronizing
 	// against the scheduler on which we can schedule the operation
 	// directly.
@@ -2447,7 +2564,9 @@ func (t *task) schedule(bq *InMemoryBuildQueue) {
 				// TODO: Do we want to provide a histogram
 				// on how far the new invocation is removed
 				// from the original one?
-				t.registerQueuedStageStarted(bq, &scq.tasksScheduledWorker)
+				if initial {
+					t.registerQueuedStageStarted(bq, &scq.tasksScheduledWorker)
+				}
 				i.idleSynchronizingWorkers[0].worker.assignUnqueuedTaskAndWakeUp(bq, t, 0)
 				return
 			}
@@ -2459,7 +2578,9 @@ func (t *task) schedule(bq *InMemoryBuildQueue) {
 				// Queue the operation, so that workers
 				// can pick it up when they become
 				// available.
-				t.registerQueuedStageStarted(bq, &scq.tasksScheduledQueue)
+				if initial {
+					t.registerQueuedStageStarted(bq, &scq.tasksScheduledQueue)
+				}
 				for _, o := range t.operations {
 					o.enqueue()
 				}
@@ -2541,6 +2662,10 @@ func (t *task) complete(bq *InMemoryBuildQueue, executeResponse *remoteexecution
 	}
 	t.currentWorker.currentTask = nil
 	t.currentWorker = nil
+	// Tokens are released before the task may be rescheduled on
+	// another size class below, so that its reacquisition goes
+	// through the regular gate.
+	t.releaseTokens(bq)
 	result, grpcCode := re_builder.GetResultAndGRPCCodeFromExecuteResponse(executeResponse)
 	t.registerExecutingStageFinished(bq, result, grpcCode)
 
@@ -2561,8 +2686,12 @@ func (t *task) complete(bq *InMemoryBuildQueue, executeResponse *remoteexecution
 		)
 		t.initialSizeClassLearner = nil
 		if backgroundInitialSizeClassLearner != nil {
-			if pq.maximumQueuedBackgroundLearningOperations == 0 {
+			if pq.maximumQueuedBackgroundLearningOperations == 0 || len(t.tokenRequirements) > 0 {
 				// No background learning permitted.
+				// Speculative re-executions of
+				// token-requiring actions would spend
+				// scarce tokens on work nobody waits
+				// for.
 				backgroundInitialSizeClassLearner.Abandoned()
 			} else {
 				backgroundSCQ := pq.sizeClassQueues[backgroundSizeClassIndex]
@@ -2590,7 +2719,7 @@ func (t *task) complete(bq *InMemoryBuildQueue, executeResponse *remoteexecution
 					backgroundAction.Timeout = durationpb.New(backgroundTimeout)
 
 					backgroundTask.newOperation(bq, pq.backgroundLearningOperationPriority, backgroundInvocation, true)
-					backgroundTask.schedule(bq)
+					backgroundTask.schedule(bq, true)
 				}
 			}
 		}
@@ -2621,7 +2750,7 @@ func (t *task) complete(bq *InMemoryBuildQueue, executeResponse *remoteexecution
 			t.operations[i] = o
 			o.invocation = i
 		}
-		t.schedule(bq)
+		t.schedule(bq, true)
 		t.reportNonFinalStageChange()
 	} else {
 		// The task succeeded or it failed on the largest size
@@ -2805,6 +2934,7 @@ func (w *worker) assignUnqueuedTask(bq *InMemoryBuildQueue, t *task, stickinessR
 	t.registerQueuedStageFinished(bq)
 	w.currentTask = t
 	t.currentWorker = w
+	t.acquireTokens()
 	t.retryCount = 0
 	for i := range t.operations {
 		i.incrementExecutingWorkersCount(bq, w)
@@ -2820,8 +2950,17 @@ func (w *worker) assignUnqueuedTask(bq *InMemoryBuildQueue, t *task, stickinessR
 func (w *worker) assignQueuedTask(bq *InMemoryBuildQueue, t *task, stickinessRetained int) {
 	w.assignUnqueuedTask(bq, t, stickinessRetained)
 
-	for _, o := range t.operations {
-		o.removeQueuedFromInvocation()
+	if t.blockedPool != nil {
+		// The task was parked on a token pool, so its
+		// operations are not in any heap. This happens when a
+		// parked task is completed without running: killed,
+		// abandoned by its clients, or its size class queue
+		// removed.
+		t.unpark()
+	} else {
+		for _, o := range t.operations {
+			o.removeQueuedFromInvocation()
+		}
 	}
 	t.reportNonFinalStageChange()
 }
@@ -2829,8 +2968,36 @@ func (w *worker) assignQueuedTask(bq *InMemoryBuildQueue, t *task, stickinessRet
 // assignNextQueuedTask determines which queued task is the best
 // candidate for execution and assigns it to the current task.
 func (w *worker) assignNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, workerID map[string]string) bool {
-	lastInvocationKeys := w.lastInvocation.invocationKeys
 	pq := scq.platformQueue
+	if t, stickinessRetained := w.selectNextQueuedTask(bq, scq, pq); t != nil {
+		scq.workerInvocationStickinessRetained.Observe(float64(stickinessRetained))
+		w.assignQueuedTask(bq, t, stickinessRetained)
+		return true
+	}
+	return false
+}
+
+// selectNextQueuedTask determines which queued task is the best
+// candidate for execution. Candidates whose token requirements cannot
+// be satisfied are parked on the token pool, after which the search
+// restarts from the root invocation, so that token-free work behind
+// them is not held up.
+func (w *worker) selectNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, pq *platformQueue) (*task, int) {
+	for {
+		t, stickinessRetained := w.findNextQueuedTask(bq, scq, pq)
+		if t == nil {
+			return nil, 0
+		}
+		p := bq.firstInsufficientPool(t)
+		if p == nil {
+			return t, stickinessRetained
+		}
+		t.park(bq, p)
+	}
+}
+
+func (w *worker) findNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, pq *platformQueue) (*task, int) {
+	lastInvocationKeys := w.lastInvocation.invocationKeys
 	workerInvocationStickinessLimits := pq.workerInvocationStickinessLimits
 	stickinessStartingTimes := w.stickinessStartingTimes
 	i := &scq.rootInvocation
@@ -2845,9 +3012,7 @@ func (w *worker) assignNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueu
 			// One or more operations are enqueued in this
 			// invocation directly. Pick the most preferable
 			// operation.
-			scq.workerInvocationStickinessRetained.Observe(float64(stickinessRetained))
-			w.assignQueuedTask(bq, i.queuedOperations[0].task, stickinessRetained)
-			return true
+			return i.queuedOperations[0].task, stickinessRetained
 		} else if len(i.queuedChildren) > 0 {
 			// One or more operations are enqueued in a
 			// child invocation.
@@ -2890,7 +3055,7 @@ func (w *worker) assignNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueu
 			i = iBest
 		} else {
 			// No queued operations available.
-			return false
+			return nil, 0
 		}
 	}
 }
