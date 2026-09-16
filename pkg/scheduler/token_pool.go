@@ -266,7 +266,7 @@ func (bq *InMemoryBuildQueue) getTokenPoolStates() []*buildqueuestate.TokenPoolS
 			Name:               p.key.name,
 			Capacity:           p.capacity,
 			InUse:              p.inUse,
-			Reserved:           p.reserved,
+			ReservedCount:      p.reserved,
 			BlockedTasksCount:  uint32(len(p.blocked)),
 		})
 	}

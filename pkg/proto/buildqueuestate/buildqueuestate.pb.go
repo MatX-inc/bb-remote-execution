@@ -354,8 +354,8 @@ type OperationState struct {
 	Priority           int32                   `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	InstanceNameSuffix string                  `protobuf:"bytes,13,opt,name=instance_name_suffix,json=instanceNameSuffix,proto3" json:"instance_name_suffix,omitempty"`
 	DigestFunction     v2.DigestFunction_Value `protobuf:"varint,15,opt,name=digest_function,json=digestFunction,proto3,enum=build.bazel.remote.execution.v2.DigestFunction_Value" json:"digest_function,omitempty"`
-	TokenRequirements  []*TokenRequirement     `protobuf:"bytes,16,rep,name=token_requirements,json=tokenRequirements,proto3" json:"token_requirements,omitempty"`
-	BlockedOnToken     string                  `protobuf:"bytes,17,opt,name=blocked_on_token,json=blockedOnToken,proto3" json:"blocked_on_token,omitempty"`
+	TokenRequirements  []*TokenRequirement     `protobuf:"bytes,100,rep,name=token_requirements,json=tokenRequirements,proto3" json:"token_requirements,omitempty"`
+	BlockedOnToken     string                  `protobuf:"bytes,101,opt,name=blocked_on_token,json=blockedOnToken,proto3" json:"blocked_on_token,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -667,7 +667,7 @@ type InvocationState struct {
 	ChildrenCount                 uint32                                 `protobuf:"varint,7,opt,name=children_count,json=childrenCount,proto3" json:"children_count,omitempty"`
 	ActiveChildrenCount           uint32                                 `protobuf:"varint,8,opt,name=active_children_count,json=activeChildrenCount,proto3" json:"active_children_count,omitempty"`
 	QueuedChildrenCount           uint32                                 `protobuf:"varint,9,opt,name=queued_children_count,json=queuedChildrenCount,proto3" json:"queued_children_count,omitempty"`
-	BlockedOperationsCount        uint32                                 `protobuf:"varint,10,opt,name=blocked_operations_count,json=blockedOperationsCount,proto3" json:"blocked_operations_count,omitempty"`
+	BlockedOperationsCount        uint32                                 `protobuf:"varint,100,opt,name=blocked_operations_count,json=blockedOperationsCount,proto3" json:"blocked_operations_count,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -765,7 +765,7 @@ type TokenPoolState struct {
 	Capacity           uint32                 `protobuf:"varint,3,opt,name=capacity,proto3" json:"capacity,omitempty"`
 	InUse              uint32                 `protobuf:"varint,4,opt,name=in_use,json=inUse,proto3" json:"in_use,omitempty"`
 	BlockedTasksCount  uint32                 `protobuf:"varint,5,opt,name=blocked_tasks_count,json=blockedTasksCount,proto3" json:"blocked_tasks_count,omitempty"`
-	Reserved           uint32                 `protobuf:"varint,6,opt,name=reserved,proto3" json:"reserved,omitempty"`
+	ReservedCount      uint32                 `protobuf:"varint,6,opt,name=reserved_count,json=reservedCount,proto3" json:"reserved_count,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -835,9 +835,9 @@ func (x *TokenPoolState) GetBlockedTasksCount() uint32 {
 	return 0
 }
 
-func (x *TokenPoolState) GetReserved() uint32 {
+func (x *TokenPoolState) GetReservedCount() uint32 {
 	if x != nil {
-		return x.Reserved
+		return x.ReservedCount
 	}
 	return 0
 }
@@ -1108,9 +1108,9 @@ type ListOperationsRequest struct {
 	StartAfter                    *ListOperationsRequest_StartAfter `protobuf:"bytes,2,opt,name=start_after,json=startAfter,proto3" json:"start_after,omitempty"`
 	FilterInvocationId            *anypb.Any                        `protobuf:"bytes,3,opt,name=filter_invocation_id,json=filterInvocationId,proto3" json:"filter_invocation_id,omitempty"`
 	FilterStage                   v2.ExecutionStage_Value           `protobuf:"varint,4,opt,name=filter_stage,json=filterStage,proto3,enum=build.bazel.remote.execution.v2.ExecutionStage_Value" json:"filter_stage,omitempty"`
-	FilterTokenName               string                            `protobuf:"bytes,5,opt,name=filter_token_name,json=filterTokenName,proto3" json:"filter_token_name,omitempty"`
-	FilterTokenInstanceNamePrefix string                            `protobuf:"bytes,6,opt,name=filter_token_instance_name_prefix,json=filterTokenInstanceNamePrefix,proto3" json:"filter_token_instance_name_prefix,omitempty"`
-	FilterTokenBlockedOnly        bool                              `protobuf:"varint,7,opt,name=filter_token_blocked_only,json=filterTokenBlockedOnly,proto3" json:"filter_token_blocked_only,omitempty"`
+	FilterTokenName               string                            `protobuf:"bytes,100,opt,name=filter_token_name,json=filterTokenName,proto3" json:"filter_token_name,omitempty"`
+	FilterTokenInstanceNamePrefix string                            `protobuf:"bytes,101,opt,name=filter_token_instance_name_prefix,json=filterTokenInstanceNamePrefix,proto3" json:"filter_token_instance_name_prefix,omitempty"`
+	FilterTokenBlockedOnly        bool                              `protobuf:"varint,102,opt,name=filter_token_blocked_only,json=filterTokenBlockedOnly,proto3" json:"filter_token_blocked_only,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -1301,7 +1301,7 @@ func (x *KillOperationsRequest) GetStatus() *status.Status {
 type ListPlatformQueuesResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	PlatformQueues []*PlatformQueueState  `protobuf:"bytes,1,rep,name=platform_queues,json=platformQueues,proto3" json:"platform_queues,omitempty"`
-	TokenPools     []*TokenPoolState      `protobuf:"bytes,2,rep,name=token_pools,json=tokenPools,proto3" json:"token_pools,omitempty"`
+	TokenPools     []*TokenPoolState      `protobuf:"bytes,100,rep,name=token_pools,json=tokenPools,proto3" json:"token_pools,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2308,8 +2308,8 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"\bpriority\x18\f \x01(\x05R\bpriority\x120\n" +
 	"\x14instance_name_suffix\x18\r \x01(\tR\x12instanceNameSuffix\x12^\n" +
 	"\x0fdigest_function\x18\x0f \x01(\x0e25.build.bazel.remote.execution.v2.DigestFunction.ValueR\x0edigestFunction\x12Z\n" +
-	"\x12token_requirements\x18\x10 \x03(\v2+.buildbarn.buildqueuestate.TokenRequirementR\x11tokenRequirements\x12(\n" +
-	"\x10blocked_on_token\x18\x11 \x01(\tR\x0eblockedOnTokenB\a\n" +
+	"\x12token_requirements\x18d \x03(\v2+.buildbarn.buildqueuestate.TokenRequirementR\x11tokenRequirements\x12(\n" +
+	"\x10blocked_on_token\x18e \x01(\tR\x0eblockedOnTokenB\a\n" +
 	"\x05stageJ\x04\b\x03\x10\x04J\x04\b\x06\x10\a\"\x9f\x02\n" +
 	"\x13SizeClassQueueState\x12\x1d\n" +
 	"\n" +
@@ -2329,18 +2329,17 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"\x0echildren_count\x18\a \x01(\rR\rchildrenCount\x122\n" +
 	"\x15active_children_count\x18\b \x01(\rR\x13activeChildrenCount\x122\n" +
 	"\x15queued_children_count\x18\t \x01(\rR\x13queuedChildrenCount\x128\n" +
-	"\x18blocked_operations_count\x18\n" +
-	" \x01(\rR\x16blockedOperationsCount\x1aK\n" +
+	"\x18blocked_operations_count\x18d \x01(\rR\x16blockedOperationsCount\x1aK\n" +
 	"\x15InvocationObjectCount\x12\x16\n" +
 	"\x06direct\x18\x01 \x01(\rR\x06direct\x12\x1a\n" +
-	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xd5\x01\n" +
+	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xe0\x01\n" +
 	"\x0eTokenPoolState\x120\n" +
 	"\x14instance_name_prefix\x18\x01 \x01(\tR\x12instanceNamePrefix\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\bcapacity\x18\x03 \x01(\rR\bcapacity\x12\x15\n" +
 	"\x06in_use\x18\x04 \x01(\rR\x05inUse\x12.\n" +
-	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\x12\x1a\n" +
-	"\breserved\x18\x06 \x01(\rR\breserved\"~\n" +
+	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\x12%\n" +
+	"\x0ereserved_count\x18\x06 \x01(\rR\rreservedCount\"~\n" +
 	"\x14InvocationChildState\x12$\n" +
 	"\x02id\x18\x01 \x01(\v2\x14.google.protobuf.AnyR\x02id\x12@\n" +
 	"\x05state\x18\x02 \x01(\v2*.buildbarn.buildqueuestate.InvocationStateR\x05state\"\xac\x02\n" +
@@ -2369,9 +2368,9 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"startAfter\x12F\n" +
 	"\x14filter_invocation_id\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\x12filterInvocationId\x12X\n" +
 	"\ffilter_stage\x18\x04 \x01(\x0e25.build.bazel.remote.execution.v2.ExecutionStage.ValueR\vfilterStage\x12*\n" +
-	"\x11filter_token_name\x18\x05 \x01(\tR\x0ffilterTokenName\x12H\n" +
-	"!filter_token_instance_name_prefix\x18\x06 \x01(\tR\x1dfilterTokenInstanceNamePrefix\x129\n" +
-	"\x19filter_token_blocked_only\x18\a \x01(\bR\x16filterTokenBlockedOnly\x1a3\n" +
+	"\x11filter_token_name\x18d \x01(\tR\x0ffilterTokenName\x12H\n" +
+	"!filter_token_instance_name_prefix\x18e \x01(\tR\x1dfilterTokenInstanceNamePrefix\x129\n" +
+	"\x19filter_token_blocked_only\x18f \x01(\bR\x16filterTokenBlockedOnly\x1a3\n" +
 	"\n" +
 	"StartAfter\x12%\n" +
 	"\x0eoperation_name\x18\x01 \x01(\tR\roperationName\"\xb7\x01\n" +
@@ -2389,7 +2388,7 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"\x04type\"\xc0\x01\n" +
 	"\x1aListPlatformQueuesResponse\x12V\n" +
 	"\x0fplatform_queues\x18\x01 \x03(\v2-.buildbarn.buildqueuestate.PlatformQueueStateR\x0eplatformQueues\x12J\n" +
-	"\vtoken_pools\x18\x02 \x03(\v2).buildbarn.buildqueuestate.TokenPoolStateR\n" +
+	"\vtoken_pools\x18d \x03(\v2).buildbarn.buildqueuestate.TokenPoolStateR\n" +
 	"tokenPools\"\xf7\x01\n" +
 	"\x1dListInvocationChildrenRequest\x12R\n" +
 	"\x0finvocation_name\x18\x01 \x01(\v2).buildbarn.buildqueuestate.InvocationNameR\x0einvocationName\x12W\n" +

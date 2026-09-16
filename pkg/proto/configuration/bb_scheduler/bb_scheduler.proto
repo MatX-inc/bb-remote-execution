@@ -174,7 +174,7 @@ message ApplicationConfiguration {
   //
   // Tokens model shared external capacity, such as floating EDA license
   // seats, that is not tied to any single kind of worker.
-  repeated TokenPoolConfiguration token_pools = 25;
+  repeated TokenPoolConfiguration token_pools = 100;
 
   // After bb_scheduler starts, workers that were executing actions
   // before the restart may still hold tokens the new process knows
@@ -184,7 +184,7 @@ message ApplicationConfiguration {
   // affected.
   //
   // Recommended value: 20s, or unset to disable.
-  google.protobuf.Duration token_pool_startup_grace_period = 26;
+  google.protobuf.Duration token_pool_startup_grace_period = 101;
 }
 
 message TokenPoolConfiguration {

@@ -826,7 +826,7 @@ func TestInMemoryBuildQueueTokenPoolsReservationAcrossPlatformQueues(t *testing.
 	requireIdle(t, env.synchronizeWithPreference("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse()), true))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	env.requirePool("vcs", 0, 1)
-	require.Equal(t, uint32(1), env.pool("vcs").Reserved)
+	require.Equal(t, uint32(1), env.pool("vcs").ReservedCount)
 	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
 	require.Equal(t, "vcs", env.operation(tokenOperationName(3)).BlockedOnToken)
 	require.Equal(t, []string{tokenOperationName(2), tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "vcs"))
@@ -841,18 +841,18 @@ func TestInMemoryBuildQueueTokenPoolsReservationAcrossPlatformQueues(t *testing.
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("vcs", 1, 1)
-	require.Equal(t, uint32(0), env.pool("vcs").Reserved)
+	require.Equal(t, uint32(0), env.pool("vcs").ReservedCount)
 	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
 
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
 	env.requirePool("vcs", 0, 0)
-	require.Equal(t, uint32(1), env.pool("vcs").Reserved)
+	require.Equal(t, uint32(1), env.pool("vcs").ReservedCount)
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(3))
 	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("vcs", 1, 0)
-	require.Equal(t, uint32(0), env.pool("vcs").Reserved)
+	require.Equal(t, uint32(0), env.pool("vcs").ReservedCount)
 }
 
 // Killing a parked operation removes it from the pool's FIFO and

@@ -50,8 +50,8 @@ type ApplicationConfiguration struct {
 	AdminRoutePrefix                  string                                   `protobuf:"bytes,22,opt,name=admin_route_prefix,json=adminRoutePrefix,proto3" json:"admin_route_prefix,omitempty"`
 	SynchronizeAuthorizer             *auth.AuthorizerConfiguration            `protobuf:"bytes,23,opt,name=synchronize_authorizer,json=synchronizeAuthorizer,proto3" json:"synchronize_authorizer,omitempty"`
 	ZstdPool                          *zstd.PoolConfiguration                  `protobuf:"bytes,24,opt,name=zstd_pool,json=zstdPool,proto3" json:"zstd_pool,omitempty"`
-	TokenPools                        []*TokenPoolConfiguration                `protobuf:"bytes,25,rep,name=token_pools,json=tokenPools,proto3" json:"token_pools,omitempty"`
-	TokenPoolStartupGracePeriod       *durationpb.Duration                     `protobuf:"bytes,26,opt,name=token_pool_startup_grace_period,json=tokenPoolStartupGracePeriod,proto3" json:"token_pool_startup_grace_period,omitempty"`
+	TokenPools                        []*TokenPoolConfiguration                `protobuf:"bytes,100,rep,name=token_pools,json=tokenPools,proto3" json:"token_pools,omitempty"`
+	TokenPoolStartupGracePeriod       *durationpb.Duration                     `protobuf:"bytes,101,opt,name=token_pool_startup_grace_period,json=tokenPoolStartupGracePeriod,proto3" json:"token_pool_startup_grace_period,omitempty"`
 	unknownFields                     protoimpl.UnknownFields
 	sizeCache                         protoimpl.SizeCache
 }
@@ -395,9 +395,9 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_configuration_bb_s
 	"\x12admin_route_prefix\x18\x16 \x01(\tR\x10adminRoutePrefix\x12l\n" +
 	"\x16synchronize_authorizer\x18\x17 \x01(\v25.buildbarn.configuration.auth.AuthorizerConfigurationR\x15synchronizeAuthorizer\x12L\n" +
 	"\tzstd_pool\x18\x18 \x01(\v2/.buildbarn.configuration.zstd.PoolConfigurationR\bzstdPool\x12]\n" +
-	"\vtoken_pools\x18\x19 \x03(\v2<.buildbarn.configuration.bb_scheduler.TokenPoolConfigurationR\n" +
+	"\vtoken_pools\x18d \x03(\v2<.buildbarn.configuration.bb_scheduler.TokenPoolConfigurationR\n" +
 	"tokenPools\x12_\n" +
-	"\x1ftoken_pool_startup_grace_period\x18\x1a \x01(\v2\x19.google.protobuf.DurationR\x1btokenPoolStartupGracePeriodJ\x04\b\x02\x10\x03J\x04\b\t\x10\n" +
+	"\x1ftoken_pool_startup_grace_period\x18e \x01(\v2\x19.google.protobuf.DurationR\x1btokenPoolStartupGracePeriodJ\x04\b\x02\x10\x03J\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0f\"z\n" +
 	"\x16TokenPoolConfiguration\x120\n" +

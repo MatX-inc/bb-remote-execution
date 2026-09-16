@@ -204,13 +204,13 @@ message OperationState {
 
   // The tokens that the operation's task holds while executing, as
   // declared through "token:<name>" platform properties.
-  repeated TokenRequirement token_requirements = 16;
+  repeated TokenRequirement token_requirements = 100;
 
   // If set, the operation is in the QUEUED stage but is not eligible
   // for assignment to a worker, because the named token pool cannot
   // currently satisfy its requirement. The operation is waiting in
   // that pool's FIFO.
-  string blocked_on_token = 17;
+  string blocked_on_token = 101;
 }
 
 message SizeClassQueueState {
@@ -315,7 +315,7 @@ message InvocationState {
   // invocations, that are in the QUEUED execution stage but are
   // waiting for tokens. These operations are not counted in
   // 'queued_operations_count'.
-  uint32 blocked_operations_count = 10;
+  uint32 blocked_operations_count = 100;
 }
 
 message TokenPoolState {
@@ -338,7 +338,7 @@ message TokenPoolState {
   // The number of tokens set aside for tasks that left the FIFO but
   // are still waiting for a worker. Together with 'in_use' this is
   // the number of tokens that cannot be handed out.
-  uint32 reserved = 6;
+  uint32 reserved_count = 6;
 }
 
 message InvocationChildState {
@@ -448,16 +448,16 @@ message ListOperationsRequest {
   // the provided name under 'filter_token_instance_name_prefix'.
   // Combined with 'filter_stage', this lists the holders (EXECUTING)
   // or the waiters (QUEUED) of a token.
-  string filter_token_name = 5;
+  string filter_token_name = 100;
 
   // The instance name prefix of the token pool named by
   // 'filter_token_name'. Pools are keyed by prefix and name.
-  string filter_token_instance_name_prefix = 6;
+  string filter_token_instance_name_prefix = 101;
 
   // If set together with 'filter_token_name', only return operations
   // that are parked on that token pool, excluding queued operations
   // that merely require the token.
-  bool filter_token_blocked_only = 7;
+  bool filter_token_blocked_only = 102;
 }
 
 message ListOperationsResponse {
@@ -498,7 +498,7 @@ message ListPlatformQueuesResponse {
 
   // The state of all token pools managed by the scheduler, sorted by
   // instance name prefix and name.
-  repeated TokenPoolState token_pools = 2;
+  repeated TokenPoolState token_pools = 100;
 }
 
 message ListInvocationChildrenRequest {
