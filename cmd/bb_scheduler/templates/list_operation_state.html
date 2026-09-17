@@ -2,12 +2,20 @@
 
 <h1 class="my-4">Operations</h1>
 
-{{with .FilterInvocationID}}
+{{if or .FilterInvocationID .FilterToken}}
 	<table class="table" style="table-layout: fixed">
-		<tr>
-			<th style="width: 25%">Invocation ID:</th>
-			<td style="width: 75%; word-break: break-all">{{proto_to_json .}}</td>
-		</tr>
+		{{with .FilterInvocationID}}
+			<tr>
+				<th style="width: 25%">Invocation ID:</th>
+				<td style="width: 75%; word-break: break-all">{{proto_to_json .}}</td>
+			</tr>
+		{{end}}
+		{{with .FilterToken}}
+			<tr>
+				<th style="width: 25%">Token:</th>
+				<td style="width: 75%"><span class="badge bg-primary text-nowrap">{{.}}</span></td>
+			</tr>
+		{{end}}
 	</table>
 {{end}}
 
@@ -20,7 +28,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage=QUEUED">Queued</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=QUEUED">Queued</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "EXECUTING"}}
@@ -29,7 +37,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage=EXECUTING">Executing</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=EXECUTING">Executing</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "COMPLETED"}}
@@ -38,7 +46,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage=COMPLETED">Completed</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=COMPLETED">Completed</a>
 				</li>
 			{{end}}
 			{{if eq .FilterStage "UNKNOWN"}}
@@ -47,7 +55,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage=UNKNOWN">All</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage=UNKNOWN">All</a>
 				</li>
 			{{end}}
 		</ul>
@@ -60,7 +68,7 @@
 				</li>
 			{{else}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage={{.FilterStage}}">◀◀</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage={{.FilterStage}}">◀◀</a>
 				</li>
 			{{end}}
 			<li class="active page-item">
@@ -70,7 +78,7 @@
 			</li>
 			{{if .StartAfter}}
 				<li class="page-item">
-					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}filter_stage={{.FilterStage}}&amp;start_after={{proto_to_json .StartAfter}}">▶</a>
+					<a class="page-link" href="?{{with .FilterInvocationID}}filter_invocation_id={{proto_to_json .}}&amp;{{end}}{{.FilterTokenQuery}}filter_stage={{.FilterStage}}&amp;start_after={{proto_to_json .StartAfter}}">▶</a>
 				</li>
 			{{else}}
 				<li class="disabled page-item">
@@ -89,6 +97,7 @@
 				<th>Operation name</th>
 				<th>Action digest</th>
 				<th>Target ID</th>
+				<th>Tokens</th>
 				<th>Stage</th>
 			</tr>
 		</thead>
@@ -105,8 +114,17 @@
 						<a class="font-monospace" href="{{action_url $browserURL .InvocationName.SizeClassQueueName.PlatformQueueName.InstanceNamePrefix .InstanceNameSuffix .DigestFunction .ActionDigest}}" style="color: {{to_foreground_color .ActionDigest.Hash}}">{{abbreviate .ActionDigest.Hash}}</a>
 					</td>
 					<td><span style="word-break: break-all">{{.TargetId}}</span></td>
+					<td>
+						{{range .TokenRequirements}}
+							<span class="badge bg-primary text-nowrap">{{.Name}}={{.Amount}}</span>
+						{{end}}
+					</td>
 					{{if operation_stage_queued .}}
-						<td>Queued at priority {{.Priority}}</td>
+						{{with .BlockedOnToken}}
+							<td class="bg-warning">Queued, blocked on token {{.}}</td>
+						{{else}}
+							<td>Queued at priority {{.Priority}}</td>
+						{{end}}
 					{{else}}
 						{{with operation_stage_executing .}}
 							<td class="bg-secondary text-white">Executing</td>

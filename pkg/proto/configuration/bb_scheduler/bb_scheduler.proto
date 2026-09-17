@@ -164,6 +164,49 @@ message ApplicationConfiguration {
   // process-wide pool shared by all gRPC CAS clients and the
   // ByteStream server.
   buildbarn.configuration.zstd.PoolConfiguration zstd_pool = 24;
+
+  // Pools of tokens that limit how many actions may execute concurrently
+  // across all platform queues sharing an instance name prefix. Actions
+  // request tokens through platform properties named "token:<name>"
+  // whose value is the number of tokens to hold while executing. These
+  // properties are stripped before the action is routed to a platform
+  // queue, so workers never observe them.
+  //
+  // Tokens model shared external capacity, such as floating EDA license
+  // seats, that is not tied to any single kind of worker.
+  repeated TokenPoolConfiguration token_pools = 100;
+
+  // After bb_scheduler starts, workers that were executing actions
+  // before the restart may still hold tokens the new process knows
+  // nothing about, until they resynchronize and are told to go idle.
+  // During this grace period no token-requiring action is assigned to
+  // a worker; such actions remain queued. Token-free actions are not
+  // affected.
+  //
+  // Recommended value: 20s, or unset to disable.
+  google.protobuf.Duration token_pool_startup_grace_period = 101;
+}
+
+message TokenPoolConfiguration {
+  // The instance name prefix under which the pool is visible. The pool
+  // is shared by all platform queues whose instance name prefix equals
+  // this value, so an action's routing (e.g., a "pool" platform
+  // property) and its token requirements are independent.
+  string instance_name_prefix = 1;
+
+  // The name of the token, referenced by actions through the
+  // "token:<name>" platform property. Pools are keyed by
+  // (instance_name_prefix, name).
+  string name = 2;
+
+  // The number of tokens in the pool. The number of tokens in use is
+  // derived from the actions that are in the EXECUTING stage; it is
+  // never persisted.
+  //
+  // A capacity of zero is permitted. Actions requiring the token then
+  // fail immediately with FAILED_PRECONDITION, which is a way to turn
+  // off a class of actions without removing the pool.
+  uint32 capacity = 3;
 }
 
 message PredeclaredPlatformQueueConfiguration {

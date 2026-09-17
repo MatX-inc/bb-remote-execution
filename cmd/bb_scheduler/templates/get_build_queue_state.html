@@ -73,4 +73,37 @@
 	</table>
 </div>
 
+<h2 class="my-4">Token pools</h2>
+
+<div class="table-responsive">
+	<table class="align-middle border-dark table table-bordered table-sm">
+		<thead class="text-center">
+			<tr>
+				<th>Instance name prefix</th>
+				<th>Token</th>
+				<th>Capacity</th>
+				<th>In use</th>
+				<th>Reserved</th>
+				<th>Blocked tasks</th>
+			</tr>
+		</thead>
+		<tbody>
+			{{range .TokenPools}}
+				<tr>
+					<td>{{.InstanceNamePrefix | printf "%#v"}}</td>
+					<td><span class="badge bg-primary text-nowrap">{{.Name}}</span></td>
+					<td class="text-end">{{.Capacity}}</td>
+					<td class="text-end"><a href="operations?filter_stage=EXECUTING&amp;filter_token_instance_name_prefix={{.InstanceNamePrefix}}&amp;filter_token={{.Name}}">{{.InUse}}</a></td>
+					<td class="text-end"><a href="operations?filter_stage=QUEUED&amp;filter_token_instance_name_prefix={{.InstanceNamePrefix}}&amp;filter_token={{.Name}}">{{.ReservedCount}}</a></td>
+					<td class="text-end"><a href="operations?filter_stage=QUEUED&amp;filter_token_instance_name_prefix={{.InstanceNamePrefix}}&amp;filter_token={{.Name}}&amp;filter_token_blocked_only=1">{{.BlockedTasksCount}}</a></td>
+				</tr>
+			{{else}}
+				<tr>
+					<td class="text-center" colspan="6">No token pools configured</td>
+				</tr>
+			{{end}}
+		</tbody>
+	</table>
+</div>
+
 {{template "footer.html"}}
