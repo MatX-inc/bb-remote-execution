@@ -853,6 +853,110 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	env.requirePool("vcs", 2, 2)
 }
 
+// When workers of several size classes wait for the same token, the
+// task of the smallest size class gets it, even if a task of a larger
+// size class was parked first. Otherwise the larger, longer running
+// actions end up holding the tokens while small ones queue.
+func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
+	// Idle workers block in Synchronize() instead of returning,
+	// as the harness only fires timers of the default interval.
+	configuration := tokenBuildQueueConfigurationForTesting
+	configuration.GetIdleWorkerSynchronizationInterval = func() time.Duration { return time.Minute }
+	env := newTokenTestEnv(t, &configuration, time.Unix(1000, 0))
+	env.registerPool("vcs", 1)
+	env.registerPlatformQueue(platformForTesting, 0, []uint32{1, 2})
+
+	streamX := env.execute(&executeOptions{
+		hash:           tokenActionHash(1),
+		operationName:  tokenOperationName(1),
+		tokens:         map[string]uint32{"vcs": 1},
+		sizeClasses:    []uint32{1, 2},
+		sizeClassIndex: 1,
+	})
+	requireExecuting(t, env.synchronize("large1", platformForTesting, 2, idleWorkerState()), tokenActionHash(1))
+	requireOperationStage(t, streamX, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
+
+	// Park a large task, then a small one.
+	env.advance(time.Second)
+	streamLarge := env.execute(&executeOptions{
+		hash:           tokenActionHash(2),
+		operationName:  tokenOperationName(2),
+		tokens:         map[string]uint32{"vcs": 1},
+		sizeClasses:    []uint32{1, 2},
+		sizeClassIndex: 1,
+	})
+	env.advance(time.Second)
+	streamSmall := env.execute(&executeOptions{
+		hash:           tokenActionHash(3),
+		operationName:  tokenOperationName(3),
+		tokens:         map[string]uint32{"vcs": 1},
+		sizeClasses:    []uint32{1, 2},
+		sizeClassIndex: 0,
+	})
+	env.requirePool("vcs", 1, 2)
+
+	// A worker of each size class waits for work.
+	type synchronizeResult struct {
+		response *remoteworker.SynchronizeResponse
+		err      error
+	}
+	waitForWork := func(worker string, sizeClass uint32) (context.CancelFunc, <-chan synchronizeResult) {
+		ctx, cancel := context.WithCancel(env.ctx)
+		results := make(chan synchronizeResult, 1)
+		go func() {
+			response, err := env.bq.Synchronize(ctx, &remoteworker.SynchronizeRequest{
+				WorkerId:           tokenWorkerID(worker),
+				InstanceNamePrefix: "main",
+				Platform:           platformForTesting,
+				SizeClass:          sizeClass,
+				CurrentState:       idleWorkerState(),
+			})
+			results <- synchronizeResult{response: response, err: err}
+		}()
+		return cancel, results
+	}
+	cancelSmall, smallResults := waitForWork("small1", 1)
+	defer cancelSmall()
+	cancelLarge, largeResults := waitForWork("large2", 2)
+	defer cancelLarge()
+	require.Eventually(t, func() bool {
+		response, err := env.bq.ListPlatformQueues(env.ctx, &emptypb.Empty{})
+		require.NoError(t, err)
+		for _, scq := range response.PlatformQueues[0].SizeClassQueues {
+			if scq.RootInvocation.IdleSynchronizingWorkersCount != 1 {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, time.Millisecond)
+
+	// Releasing the token hands it to the small task.
+	env.advance(time.Second)
+	requireIdle(t, env.synchronizeWithPreference("large1", platformForTesting, 2, completedWorkerState(tokenActionHash(1), successfulExecuteResponse()), true))
+	requireOperationStage(t, streamX, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
+	var smallResult synchronizeResult
+	select {
+	case smallResult = <-smallResults:
+	case largeResult := <-largeResults:
+		require.FailNow(t, "the token went to the large worker", "%v", largeResult.response)
+	}
+	require.NoError(t, smallResult.err)
+	requireExecuting(t, smallResult.response, tokenActionHash(3))
+	requireOperationStage(t, streamSmall, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 1, 1)
+	require.Equal(t, "vcs", env.operation(tokenOperationName(2)).BlockedOnToken)
+	cancelLarge()
+	require.Equal(t, codes.Canceled, status.Code((<-largeResults).err))
+
+	// Once no small task is left, the large one gets the token.
+	env.advance(time.Second)
+	requireIdle(t, env.synchronizeWithPreference("small1", platformForTesting, 1, completedWorkerState(tokenActionHash(3), successfulExecuteResponse()), true))
+	requireOperationStage(t, streamSmall, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_COMPLETED)
+	requireExecuting(t, env.synchronize("large1", platformForTesting, 2, idleWorkerState()), tokenActionHash(2))
+	requireOperationStage(t, streamLarge, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 1, 0)
+}
+
 // Killing a parked operation removes it from the pool's FIFO and
 // reports the status to the client.
 func TestInMemoryBuildQueueTokenPoolsKillParkedOperation(t *testing.T) {
