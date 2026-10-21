@@ -765,9 +765,10 @@ type TokenPoolState struct {
 	Capacity           uint32                 `protobuf:"varint,3,opt,name=capacity,proto3" json:"capacity,omitempty"`
 	InUse              uint32                 `protobuf:"varint,4,opt,name=in_use,json=inUse,proto3" json:"in_use,omitempty"`
 	BlockedTasksCount  uint32                 `protobuf:"varint,5,opt,name=blocked_tasks_count,json=blockedTasksCount,proto3" json:"blocked_tasks_count,omitempty"`
-	ReservedCount      uint32                 `protobuf:"varint,6,opt,name=reserved_count,json=reservedCount,proto3" json:"reserved_count,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Deprecated: Marked as deprecated in github.com/buildbarn/bb-remote-execution/pkg/proto/buildqueuestate/buildqueuestate.proto.
+	ReservedCount uint32 `protobuf:"varint,6,opt,name=reserved_count,json=reservedCount,proto3" json:"reserved_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TokenPoolState) Reset() {
@@ -835,6 +836,7 @@ func (x *TokenPoolState) GetBlockedTasksCount() uint32 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in github.com/buildbarn/bb-remote-execution/pkg/proto/buildqueuestate/buildqueuestate.proto.
 func (x *TokenPoolState) GetReservedCount() uint32 {
 	if x != nil {
 		return x.ReservedCount
@@ -2332,14 +2334,14 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_buildqueuestate_bu
 	"\x18blocked_operations_count\x18d \x01(\rR\x16blockedOperationsCount\x1aK\n" +
 	"\x15InvocationObjectCount\x12\x16\n" +
 	"\x06direct\x18\x01 \x01(\rR\x06direct\x12\x1a\n" +
-	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xe0\x01\n" +
+	"\bindirect\x18\x02 \x01(\rR\bindirectJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04\"\xe4\x01\n" +
 	"\x0eTokenPoolState\x120\n" +
 	"\x14instance_name_prefix\x18\x01 \x01(\tR\x12instanceNamePrefix\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\bcapacity\x18\x03 \x01(\rR\bcapacity\x12\x15\n" +
 	"\x06in_use\x18\x04 \x01(\rR\x05inUse\x12.\n" +
-	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\x12%\n" +
-	"\x0ereserved_count\x18\x06 \x01(\rR\rreservedCount\"~\n" +
+	"\x13blocked_tasks_count\x18\x05 \x01(\rR\x11blockedTasksCount\x12)\n" +
+	"\x0ereserved_count\x18\x06 \x01(\rB\x02\x18\x01R\rreservedCount\"~\n" +
 	"\x14InvocationChildState\x12$\n" +
 	"\x02id\x18\x01 \x01(\v2\x14.google.protobuf.AnyR\x02id\x12@\n" +
 	"\x05state\x18\x02 \x01(\v2*.buildbarn.buildqueuestate.InvocationStateR\x05state\"\xac\x02\n" +

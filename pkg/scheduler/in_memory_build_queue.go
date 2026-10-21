@@ -358,7 +358,6 @@ func NewInMemoryBuildQueue(contentAddressableStorage blobstore.BlobAccess, clock
 
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolCapacity)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolInUse)
-		prometheus.MustRegister(inMemoryBuildQueueTokenPoolReserved)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolBlockedTasks)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolRejectionsTotal)
 	})
@@ -2489,10 +2488,6 @@ type task struct {
 	// Position of the task in the token pools' FIFOs, assigned
 	// the first time it is parked. Zero if it never was.
 	tokenSequence uint64
-	// When set, the task is in the QUEUED stage with its tokens
-	// set aside in the pools, so that assignment cannot fail on
-	// tokens.
-	tokensReserved bool
 
 	executeResponse   *remoteexecution.ExecuteResponse
 	stageChangeWakeup chan struct{}
@@ -2543,15 +2538,17 @@ func (t *task) schedule(bq *InMemoryBuildQueue, initial bool) {
 			t.registerQueuedStageStarted(bq, &t.getCurrentSizeClassQueue().tasksScheduledQueue)
 		}
 		t.park(bq, p)
+		// The task may still run right away, if the tasks
+		// parked before it have no worker available.
+		bq.dispatchParkedTasks(nil, false)
 		return
 	}
 	t.assignOrEnqueue(bq, initial)
 }
 
 // assignOrEnqueue is the part of schedule() that runs once the token
-// gate has been passed. tokenPool.unblock() calls it directly for a
-// task it has just taken off its FIFO, as re-running the gate would
-// see the next task at the head of the FIFO and park it again.
+// gate has been passed. dispatchParkedTasks() calls it directly for a
+// parked task it lets take its tokens.
 func (t *task) assignOrEnqueue(bq *InMemoryBuildQueue, initial bool) {
 	// Check whether there are idle workers that are synchronizing
 	// against the scheduler on which we can schedule the operation
@@ -2984,32 +2981,30 @@ func (w *worker) assignQueuedTask(bq *InMemoryBuildQueue, t *task, stickinessRet
 
 // assignNextQueuedTask determines which queued task is the best
 // candidate for execution and assigns it to the current task.
+//
+// Parked tasks of the size class queue that may take their tokens go
+// first, as they waited longer than any token-requiring task still in
+// the invocation heaps. Heap candidates whose token requirements cannot
+// be satisfied are parked, after which the search restarts, so that
+// token-free work behind them is not held up.
 func (w *worker) assignNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, workerID map[string]string) bool {
 	pq := scq.platformQueue
-	if t, stickinessRetained := w.selectNextQueuedTask(bq, scq, pq); t != nil {
+	for {
+		if t := bq.dispatchParkedTasks(scq, false); t != nil {
+			w.assignQueuedTask(bq, t, 0)
+			return true
+		}
+		t, stickinessRetained := w.findNextQueuedTask(bq, scq, pq)
+		if t == nil {
+			return false
+		}
+		if p := bq.firstInsufficientPool(t); p != nil {
+			t.park(bq, p)
+			continue
+		}
 		scq.workerInvocationStickinessRetained.Observe(float64(stickinessRetained))
 		w.assignQueuedTask(bq, t, stickinessRetained)
 		return true
-	}
-	return false
-}
-
-// selectNextQueuedTask determines which queued task is the best
-// candidate for execution. Candidates whose token requirements cannot
-// be satisfied are parked on the token pool, after which the search
-// restarts from the root invocation, so that token-free work behind
-// them is not held up.
-func (w *worker) selectNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, pq *platformQueue) (*task, int) {
-	for {
-		t, stickinessRetained := w.findNextQueuedTask(bq, scq, pq)
-		if t == nil {
-			return nil, 0
-		}
-		p := bq.firstInsufficientPool(t)
-		if p == nil {
-			return t, stickinessRetained
-		}
-		t.park(bq, p)
 	}
 }
 

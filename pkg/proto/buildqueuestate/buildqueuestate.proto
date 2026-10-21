@@ -335,10 +335,9 @@ message TokenPoolState {
   // pool's FIFO for tokens to become available.
   uint32 blocked_tasks_count = 5;
 
-  // The number of tokens set aside for tasks that left the FIFO but
-  // are still waiting for a worker. Together with 'in_use' this is
-  // the number of tokens that cannot be handed out.
-  uint32 reserved_count = 6;
+  // Always zero. Tokens are no longer set aside for tasks waiting for
+  // a worker; the field remains for clients that still read it.
+  uint32 reserved_count = 6 [deprecated = true];
 }
 
 message InvocationChildState {
