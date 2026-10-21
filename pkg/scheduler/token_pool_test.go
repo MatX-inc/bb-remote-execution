@@ -775,84 +775,82 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	env.requirePool("vcs", 1, 1)
 
 	// Completion on one platform unblocks the other. The worker
-	// of the first platform has nothing to do.
+	// of the first platform has nothing to do. The task stays
+	// parked until a worker of its platform asks for work.
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("vcs", 0, 1)
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("vcs", 1, 0)
 }
 
-// When a release lets the head of a FIFO proceed but its platform
-// queue has no idle worker, the tokens are reserved for it. Otherwise
-// a task on another platform queue sharing the pool would take them
-// first and the head would be parked again on every release.
-func TestInMemoryBuildQueueTokenPoolsReservationAcrossPlatformQueues(t *testing.T) {
+// Tokens released while the oldest waiting tasks belong to a platform
+// queue whose workers are all busy go to a waiting task that a worker
+// can run now. Setting them aside for the oldest task leaves them
+// unused for as long as its workers stay busy, while idle workers of
+// other platform queues hold back the tasks parked for them.
+func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
-	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
-	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
+	env.registerPool("vcs", 2)
+	requireIdle(t, env.synchronize("busy", otherPlatformForTesting, 0, idleWorkerState()))
+	requireIdle(t, env.synchronize("idle", platformForTesting, 0, idleWorkerState()))
 
-	stream1 := env.execute(&executeOptions{
+	// Fill the pool with one task on each platform queue.
+	streamBusy := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
 		tokens:        map[string]uint32{"vcs": 1},
+		platform:      otherPlatformForTesting,
 	})
-	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
-	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-
-	// Park a task for each platform queue, in this order.
+	requireExecuting(t, env.synchronize("busy", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+	requireOperationStage(t, streamBusy, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 	env.advance(time.Second)
-	stream2 := env.execute(&executeOptions{
+	streamIdle := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
 		tokens:        map[string]uint32{"vcs": 1},
 	})
+	requireExecuting(t, env.synchronize("idle", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
+	requireOperationStage(t, streamIdle, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
+
+	// Park two tasks for the busy platform queue, followed by two
+	// for the other one.
+	streams := map[int]remoteexecution.Execution_ExecuteClient{}
+	for _, i := range []int{3, 4, 5, 6} {
+		p := platformForTesting
+		if i < 5 {
+			p = otherPlatformForTesting
+		}
+		env.advance(time.Second)
+		streams[i] = env.execute(&executeOptions{
+			hash:          tokenActionHash(i),
+			operationName: tokenOperationName(i),
+			tokens:        map[string]uint32{"vcs": 1},
+			platform:      p,
+		})
+	}
+	env.requirePool("vcs", 2, 4)
+
+	// Completing the task on the platform queue with a free worker
+	// releases a token. The tasks of the busy platform queue are
+	// older, but no worker can run them, so the same worker takes
+	// the oldest task of its own platform queue.
 	env.advance(time.Second)
-	stream3 := env.execute(&executeOptions{
-		hash:          tokenActionHash(3),
-		operationName: tokenOperationName(3),
-		tokens:        map[string]uint32{"vcs": 1},
-		platform:      otherPlatformForTesting,
-	})
-	env.requirePool("vcs", 1, 2)
+	requireExecuting(t, env.synchronize("idle", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())), tokenActionHash(5))
+	requireOperationStage(t, streamIdle, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
+	requireOperationStage(t, streams[5], tokenOperationName(5), tokenActionHash(5), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 2, 3)
 
-	// The first worker completes its task, but wants to go idle
-	// instead of picking up the next one. The second task is
-	// enqueued with the token reserved; the third stays parked.
+	// The busy platform queue's worker finishes and takes its
+	// oldest waiting task: the order among the tasks that can run
+	// is still the order in which they were parked.
 	env.advance(time.Second)
-	requireIdle(t, env.synchronizeWithPreference("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse()), true))
-	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 1)
-	require.Equal(t, uint32(1), env.pool("vcs").ReservedCount)
-	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(3)).BlockedOnToken)
-	require.Equal(t, []string{tokenOperationName(2), tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "vcs"))
-	require.Equal(t, []string{tokenOperationName(3)}, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "vcs", true))
-
-	// The worker of the other platform queue must not be able to
-	// take the reserved token.
-	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
-
-	// The first worker picks up the second task, converting the
-	// reservation.
-	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
-	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 1)
-	require.Equal(t, uint32(0), env.pool("vcs").ReservedCount)
-	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
-
-	env.advance(time.Second)
-	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())))
-	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 0)
-	require.Equal(t, uint32(1), env.pool("vcs").ReservedCount)
-	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(3))
-	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
-	require.Equal(t, uint32(0), env.pool("vcs").ReservedCount)
+	requireExecuting(t, env.synchronize("busy", otherPlatformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(3))
+	requireOperationStage(t, streamBusy, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
+	requireOperationStage(t, streams[3], tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("vcs", 2, 2)
 }
 
 // Killing a parked operation removes it from the pool's FIFO and
@@ -1175,7 +1173,7 @@ func TestInMemoryBuildQueueTokenPoolsStaleWorkerReleasesTokens(t *testing.T) {
 
 // During the startup grace period token-requiring tasks are parked
 // even if their pools have capacity. Token-free tasks are unaffected.
-// When the grace period ends, parked tasks are scheduled.
+// When the grace period ends, parked tasks may take their tokens.
 func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	configuration := tokenBuildQueueConfigurationForTesting
 	configuration.TokenPoolStartupGracePeriod = 20 * time.Second
@@ -1204,8 +1202,7 @@ func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	// The grace period ends at 1020. Any interaction with the
 	// scheduler past that time runs the cleanup queue.
 	env.advance(15 * time.Second)
-	env.requirePool("vcs", 0, 0)
-	require.Empty(t, env.operation(tokenOperationName(1)).BlockedOnToken)
+	env.requirePool("vcs", 0, 1)
 	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("vcs", 1, 0)
