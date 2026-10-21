@@ -261,8 +261,8 @@ func (bq *InMemoryBuildQueue) endTokenPoolStartupGrace() {
 // not parked from being assigned to a worker right now, or nil if the
 // task may run. Token-free tasks may always run. During the startup
 // grace period no token-requiring task may run. A task that never was
-// parked ranks after every parked task, so it may not take tokens from
-// a pool for which tasks are parked; it is parked instead, and
+// parked may not take tokens from a pool for which tasks are parked,
+// as that would bypass their order; it is parked instead, and
 // dispatchParkedTasks() decides when it runs.
 func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 	if len(t.tokenRequirements) == 0 {
@@ -280,12 +280,18 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 }
 
 // dispatchParkedTasks hands tokens to parked tasks that a worker can
-// run right now, scanning them in the order in which they first became
-// blocked:
+// run right now. Tasks of smaller size classes go first, so that
+// tokens are not held by the larger, longer running actions while
+// small ones wait; within a size class, tasks go in the order in which
+// they first became blocked. Size classes of different platform queues
+// are compared by number. Tasks of larger size classes only get
+// tokens that no smaller task can use, and wait for as long as that
+// is the case. In this order:
 //
 //   - A task that the pools cannot satisfy closes all of its pools to
 //     the tasks behind it. This head-of-line blocking is what prevents
-//     a stream of small requests from starving a large one.
+//     a stream of requests for few tokens from starving a request for
+//     many.
 //   - A task that the pools can satisfy, but for which no worker is
 //     available, is passed over without holding any tokens. Setting
 //     tokens aside for it would leave them unused for as long as the
@@ -303,23 +309,20 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 		return nil
 	}
 	var parked []*task
-	nonEmptyPools := 0
 	hasFreeTokens := false
 	for _, p := range bq.tokenPools {
-		if len(p.blocked) > 0 {
-			parked = append(parked, p.blocked...)
-			nonEmptyPools++
-		}
+		parked = append(parked, p.blocked...)
 		hasFreeTokens = hasFreeTokens || p.inUse < p.capacity
 	}
 	if !hasFreeTokens || len(parked) == 0 {
 		return nil
 	}
-	if nonEmptyPools > 1 {
-		slices.SortFunc(parked, func(a, b *task) int {
-			return cmp.Compare(a.tokenSequence, b.tokenSequence)
-		})
-	}
+	slices.SortFunc(parked, func(a, b *task) int {
+		return cmp.Or(
+			cmp.Compare(a.getCurrentSizeClassQueue().sizeClass, b.getCurrentSizeClassQueue().sizeClass),
+			cmp.Compare(a.tokenSequence, b.tokenSequence),
+		)
+	})
 
 	closed := map[*tokenPool]struct{}{}
 	for _, t := range parked {
@@ -344,9 +347,12 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 		}
 		if hasWorker {
 			// Unparking after the assignment keeps the
-			// task's invocations active throughout.
+			// task's invocations active throughout. Unlike
+			// at Execute(), clients already wait for the
+			// task, so they must be told it started.
 			t.assignOrEnqueue(bq, false)
 			t.unpark()
+			t.reportNonFinalStageChange()
 			if bq.allTokenPoolsUnavailable(closed) {
 				return nil
 			}
