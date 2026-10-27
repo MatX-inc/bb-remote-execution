@@ -439,37 +439,37 @@ func (env *tokenTestEnv) listOperationsUnderPrefix(stage remoteexecution.Executi
 // presented to the worker is the client's.
 func TestInMemoryBuildQueueTokenPoolsStripAndRoute(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 4)
+	env.registerPool("oranges", 4)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 2},
+		tokens:        map[string]uint32{"oranges": 2},
 	})
 	o := env.operation(tokenOperationName(1))
 	require.Len(t, o.TokenRequirements, 1)
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "vcs", Amount: 2}, o.TokenRequirements[0])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "oranges", Amount: 2}, o.TokenRequirements[0])
 	require.Empty(t, o.BlockedOnToken)
 
 	executing := requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	testutil.RequireEqualProto(t, platformForTesting, executing.Action.Platform)
-	env.requirePool("vcs", 2, 0)
+	env.requirePool("oranges", 2, 0)
 
 	t.Run("ZeroAmount", func(t *testing.T) {
 		err := env.executeExpectingError(&executeOptions{
 			hash:      tokenActionHash(2),
-			tokens:    map[string]uint32{"vcs": 0},
+			tokens:    map[string]uint32{"oranges": 0},
 			noRouting: true,
 		})
-		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"vcs\" has amount \"0\", which is not an integer in [1, 4294967295]"), err)
+		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"oranges\" has amount \"0\", which is not an integer in [1, 4294967295]"), err)
 	})
 
 	t.Run("NonNumericAmount", func(t *testing.T) {
 		action := &remoteexecution.Action{
 			Platform: &remoteexecution.Platform{
 				Properties: []*remoteexecution.Platform_Property{
-					{Name: "token:vcs", Value: "many"},
+					{Name: "token:oranges", Value: "many"},
 				},
 			},
 		}
@@ -483,15 +483,15 @@ func TestInMemoryBuildQueueTokenPoolsStripAndRoute(t *testing.T) {
 		})
 		require.NoError(t, err)
 		_, err = stream.Recv()
-		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"vcs\" has amount \"many\", which is not an integer in [1, 4294967295]"), err)
+		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"oranges\" has amount \"many\", which is not an integer in [1, 4294967295]"), err)
 	})
 
 	t.Run("DuplicateToken", func(t *testing.T) {
 		action := &remoteexecution.Action{
 			Platform: &remoteexecution.Platform{
 				Properties: []*remoteexecution.Platform_Property{
-					{Name: "token:vcs", Value: "1"},
-					{Name: "token:vcs", Value: "2"},
+					{Name: "token:oranges", Value: "1"},
+					{Name: "token:oranges", Value: "2"},
 				},
 			},
 		}
@@ -505,7 +505,7 @@ func TestInMemoryBuildQueueTokenPoolsStripAndRoute(t *testing.T) {
 		})
 		require.NoError(t, err)
 		_, err = stream.Recv()
-		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"vcs\" is required more than once"), err)
+		testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token \"oranges\" is required more than once"), err)
 	})
 
 	t.Run("EmptyName", func(t *testing.T) {
@@ -535,31 +535,31 @@ func TestInMemoryBuildQueueTokenPoolsStripAndRoute(t *testing.T) {
 // capacity fail fast and abandon the size class selector.
 func TestInMemoryBuildQueueTokenPoolsUnknownOrOversized(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 2)
-	env.registerPool("dc", 0)
+	env.registerPool("oranges", 2)
+	env.registerPool("apples", 0)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	err := env.executeExpectingError(&executeOptions{
 		hash:              tokenActionHash(1),
-		tokens:            map[string]uint32{"verdi": 1},
+		tokens:            map[string]uint32{"pears": 1},
 		selectorAbandoned: true,
 	})
-	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "No token pool named \"verdi\" exists for instance name prefix \"main\""), err)
+	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "No token pool named \"pears\" exists for instance name prefix \"main\""), err)
 
 	err = env.executeExpectingError(&executeOptions{
 		hash:              tokenActionHash(2),
-		tokens:            map[string]uint32{"vcs": 3},
+		tokens:            map[string]uint32{"oranges": 3},
 		selectorAbandoned: true,
 	})
-	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "Action requires 3 tokens of pool \"vcs\" for instance name prefix \"main\", which exceeds its capacity of 2"), err)
+	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "Action requires 3 tokens of pool \"oranges\" for instance name prefix \"main\", which exceeds its capacity of 2"), err)
 
 	// A pool with capacity zero rejects every requirement.
 	err = env.executeExpectingError(&executeOptions{
 		hash:              tokenActionHash(3),
-		tokens:            map[string]uint32{"dc": 1},
+		tokens:            map[string]uint32{"apples": 1},
 		selectorAbandoned: true,
 	})
-	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "Action requires 1 tokens of pool \"dc\" for instance name prefix \"main\", which exceeds its capacity of 0"), err)
+	testutil.RequireEqualStatus(t, status.Error(codes.FailedPrecondition, "Action requires 1 tokens of pool \"apples\" for instance name prefix \"main\", which exceeds its capacity of 0"), err)
 
 	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""))
 }
@@ -568,26 +568,26 @@ func TestInMemoryBuildQueueTokenPoolsUnknownOrOversized(t *testing.T) {
 // once the first one releases its tokens.
 func TestInMemoryBuildQueueTokenPoolsCapacityGate(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 
 	env.advance(time.Second)
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
-	env.requirePool("vcs", 1, 1)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(2)).BlockedOnToken)
+	env.requirePool("oranges", 1, 1)
+	require.Equal(t, "oranges", env.operation(tokenOperationName(2)).BlockedOnToken)
 
 	// A second worker finds nothing to do, even though a task is
 	// in the QUEUED stage.
@@ -599,7 +599,7 @@ func TestInMemoryBuildQueueTokenPoolsCapacityGate(t *testing.T) {
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(2))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
 }
 
@@ -607,7 +607,7 @@ func TestInMemoryBuildQueueTokenPoolsCapacityGate(t *testing.T) {
 // work behind it: the worker parks it and continues its search.
 func TestInMemoryBuildQueueTokenPoolsTokenFreeWorkNotStarved(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 0, []uint32{0})
 
 	// Queue two token-requiring tasks and a token-free one while
@@ -615,8 +615,8 @@ func TestInMemoryBuildQueueTokenPoolsTokenFreeWorkNotStarved(t *testing.T) {
 	// this point, so none of them is parked yet.
 	streams := make([]remoteexecution.Execution_ExecuteClient, 0, 3)
 	for i, tokens := range []map[string]uint32{
-		{"vcs": 1},
-		{"vcs": 1},
+		{"oranges": 1},
+		{"oranges": 1},
 		nil,
 	} {
 		env.advance(time.Second)
@@ -626,7 +626,7 @@ func TestInMemoryBuildQueueTokenPoolsTokenFreeWorkNotStarved(t *testing.T) {
 			tokens:        tokens,
 		}))
 	}
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("oranges", 0, 0)
 
 	// The first worker takes the first task. The second worker
 	// skips the second task, as the pool is now exhausted, and
@@ -635,8 +635,8 @@ func TestInMemoryBuildQueueTokenPoolsTokenFreeWorkNotStarved(t *testing.T) {
 	requireOperationStage(t, streams[0], tokenOperationName(0), tokenActionHash(0), remoteexecution.ExecutionStage_EXECUTING)
 	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, streams[2], tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 1)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(1)).BlockedOnToken)
+	env.requirePool("oranges", 1, 1)
+	require.Equal(t, "oranges", env.operation(tokenOperationName(1)).BlockedOnToken)
 
 	// Parked operations are no longer reported as queued in the
 	// invocation, but the invocation remains active.
@@ -648,52 +648,106 @@ func TestInMemoryBuildQueueTokenPoolsTokenFreeWorkNotStarved(t *testing.T) {
 	require.Equal(t, uint32(2), root.ExecutingWorkersCount)
 }
 
-// Tasks waiting for a pool are served in the order in which they were
-// parked, even when a later, smaller request would fit.
-func TestInMemoryBuildQueueTokenPoolsStrictFIFO(t *testing.T) {
+// A request that the pool cannot satisfy holds no tokens and does not
+// delay a later, smaller request that fits.
+func TestInMemoryBuildQueueTokenPoolsSmallerRequestPassesLarger(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 4)
+	env.registerPool("oranges", 4)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 3},
+		tokens:        map[string]uint32{"oranges": 3},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 
 	// A request for four tokens is parked. A request for a single
-	// token would fit, but is parked behind it.
+	// token fits next to the running task and is not held behind it.
 	env.advance(time.Second)
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 4},
+		tokens:        map[string]uint32{"oranges": 4},
 	})
 	env.advance(time.Second)
 	stream3 := env.execute(&executeOptions{
 		hash:          tokenActionHash(3),
 		operationName: tokenOperationName(3),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
-	env.requirePool("vcs", 3, 2)
-	requireIdle(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()))
-
-	// Releasing three tokens lets the four-token request proceed.
-	// The single-token request cannot run next to it.
-	env.advance(time.Second)
-	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(2))
-	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	requireIdle(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()))
-	env.requirePool("vcs", 4, 1)
-
-	env.advance(time.Second)
-	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())), tokenActionHash(3))
-	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
+	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(3))
 	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 4, 1)
+
+	// Releasing three tokens is not enough for the four-token
+	// request while the single token is held.
+	env.advance(time.Second)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
+	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
+	env.requirePool("oranges", 1, 1)
+
+	env.advance(time.Second)
+	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, completedWorkerState(tokenActionHash(3), successfulExecuteResponse())), tokenActionHash(2))
+	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_COMPLETED)
+	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
+	env.requirePool("oranges", 4, 0)
+}
+
+// A task needing an exhausted pool does not hold back another pool it
+// also needs: tasks needing only that other pool keep taking its
+// tokens, and the waiting task runs once all of its pools have room.
+func TestInMemoryBuildQueueTokenPoolsExhaustedPoolDoesNotBlockOthers(t *testing.T) {
+	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
+	env.registerPool("oranges", 2)
+	env.registerPool("apples", 1)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
+
+	env.execute(&executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"apples": 1},
+	})
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+
+	// Two tasks needing both pools wait for "apples".
+	for i := 2; i <= 3; i++ {
+		env.advance(time.Second)
+		env.execute(&executeOptions{
+			hash:          tokenActionHash(i),
+			operationName: tokenOperationName(i),
+			tokens:        map[string]uint32{"oranges": 1, "apples": 1},
+		})
+		require.Equal(t, "apples", env.operation(tokenOperationName(i)).BlockedOnToken)
+	}
+
+	// Tasks needing only "oranges" take both of its tokens.
+	for i, worker := range []string{"worker2", "worker3"} {
+		env.advance(time.Second)
+		env.execute(&executeOptions{
+			hash:          tokenActionHash(4 + i),
+			operationName: tokenOperationName(4 + i),
+			tokens:        map[string]uint32{"oranges": 1},
+		})
+		requireExecuting(t, env.synchronize(worker, platformForTesting, 0, idleWorkerState()), tokenActionHash(4+i))
+	}
+	env.requirePool("oranges", 2, 0)
+	env.requirePool("apples", 1, 2)
+
+	// Releasing "apples" is not enough while "oranges" is exhausted;
+	// the waiting tasks now report "oranges".
+	env.advance(time.Second)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
+	require.Equal(t, "oranges", env.operation(tokenOperationName(2)).BlockedOnToken)
+	env.requirePool("oranges", 2, 2)
+	env.requirePool("apples", 0, 0)
+
+	// Releasing a token of "oranges" runs the first of them.
+	env.advance(time.Second)
+	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, completedWorkerState(tokenActionHash(4), successfulExecuteResponse())), tokenActionHash(2))
+	env.requirePool("oranges", 2, 1)
+	env.requirePool("apples", 1, 0)
 }
 
 // A task requiring two pools moves to the FIFO of the pool that
@@ -752,14 +806,14 @@ func TestInMemoryBuildQueueTokenPoolsMultipleTokensRepark(t *testing.T) {
 // different platforms draw from the same pool.
 func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
@@ -768,11 +822,11 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		platform:      otherPlatformForTesting,
 	})
 	requireIdle(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()))
-	env.requirePool("vcs", 1, 1)
+	env.requirePool("oranges", 1, 1)
 
 	// Completion on one platform unblocks the other. The worker
 	// of the first platform has nothing to do. The task stays
@@ -780,10 +834,10 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 1)
+	env.requirePool("oranges", 0, 1)
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 }
 
 // Tokens released while the oldest waiting tasks belong to a platform
@@ -793,7 +847,7 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 // other platform queues hold back the tasks parked for them.
 func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 2)
+	env.registerPool("oranges", 2)
 	requireIdle(t, env.synchronize("busy", otherPlatformForTesting, 0, idleWorkerState()))
 	requireIdle(t, env.synchronize("idle", platformForTesting, 0, idleWorkerState()))
 
@@ -801,7 +855,7 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	streamBusy := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		platform:      otherPlatformForTesting,
 	})
 	requireExecuting(t, env.synchronize("busy", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(1))
@@ -810,7 +864,7 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	streamIdle := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("idle", platformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, streamIdle, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
@@ -827,11 +881,11 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 		streams[i] = env.execute(&executeOptions{
 			hash:          tokenActionHash(i),
 			operationName: tokenOperationName(i),
-			tokens:        map[string]uint32{"vcs": 1},
+			tokens:        map[string]uint32{"oranges": 1},
 			platform:      p,
 		})
 	}
-	env.requirePool("vcs", 2, 4)
+	env.requirePool("oranges", 2, 4)
 
 	// Completing the task on the platform queue with a free worker
 	// releases a token. The tasks of the busy platform queue are
@@ -841,7 +895,7 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	requireExecuting(t, env.synchronize("idle", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())), tokenActionHash(5))
 	requireOperationStage(t, streamIdle, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, streams[5], tokenOperationName(5), tokenActionHash(5), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 2, 3)
+	env.requirePool("oranges", 2, 3)
 
 	// The busy platform queue's worker finishes and takes its
 	// oldest waiting task: the order among the tasks that can run
@@ -850,7 +904,7 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	requireExecuting(t, env.synchronize("busy", otherPlatformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(3))
 	requireOperationStage(t, streamBusy, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, streams[3], tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 2, 2)
+	env.requirePool("oranges", 2, 2)
 }
 
 // When workers of several size classes wait for the same token, the
@@ -863,13 +917,13 @@ func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
 	configuration := tokenBuildQueueConfigurationForTesting
 	configuration.GetIdleWorkerSynchronizationInterval = func() time.Duration { return time.Minute }
 	env := newTokenTestEnv(t, &configuration, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 0, []uint32{1, 2})
 
 	streamX := env.execute(&executeOptions{
 		hash:           tokenActionHash(1),
 		operationName:  tokenOperationName(1),
-		tokens:         map[string]uint32{"vcs": 1},
+		tokens:         map[string]uint32{"oranges": 1},
 		sizeClasses:    []uint32{1, 2},
 		sizeClassIndex: 1,
 	})
@@ -881,7 +935,7 @@ func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
 	streamLarge := env.execute(&executeOptions{
 		hash:           tokenActionHash(2),
 		operationName:  tokenOperationName(2),
-		tokens:         map[string]uint32{"vcs": 1},
+		tokens:         map[string]uint32{"oranges": 1},
 		sizeClasses:    []uint32{1, 2},
 		sizeClassIndex: 1,
 	})
@@ -889,11 +943,11 @@ func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
 	streamSmall := env.execute(&executeOptions{
 		hash:           tokenActionHash(3),
 		operationName:  tokenOperationName(3),
-		tokens:         map[string]uint32{"vcs": 1},
+		tokens:         map[string]uint32{"oranges": 1},
 		sizeClasses:    []uint32{1, 2},
 		sizeClassIndex: 0,
 	})
-	env.requirePool("vcs", 1, 2)
+	env.requirePool("oranges", 1, 2)
 
 	// A worker of each size class waits for work.
 	type synchronizeResult struct {
@@ -943,8 +997,8 @@ func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
 	require.NoError(t, smallResult.err)
 	requireExecuting(t, smallResult.response, tokenActionHash(3))
 	requireOperationStage(t, streamSmall, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 1)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(2)).BlockedOnToken)
+	env.requirePool("oranges", 1, 1)
+	require.Equal(t, "oranges", env.operation(tokenOperationName(2)).BlockedOnToken)
 	cancelLarge()
 	require.Equal(t, codes.Canceled, status.Code((<-largeResults).err))
 
@@ -954,20 +1008,20 @@ func TestInMemoryBuildQueueTokenPoolsSmallestSizeClassFirst(t *testing.T) {
 	requireOperationStage(t, streamSmall, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_COMPLETED)
 	requireExecuting(t, env.synchronize("large1", platformForTesting, 2, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, streamLarge, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 }
 
 // Killing a parked operation removes it from the pool's FIFO and
 // reports the status to the client.
 func TestInMemoryBuildQueueTokenPoolsKillParkedOperation(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
@@ -977,10 +1031,10 @@ func TestInMemoryBuildQueueTokenPoolsKillParkedOperation(t *testing.T) {
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		learner:       learner2,
 	})
-	env.requirePool("vcs", 1, 1)
+	env.requirePool("oranges", 1, 1)
 
 	learner2.EXPECT().Abandoned()
 	_, err := env.bq.KillOperations(env.ctx, &buildqueuestate.KillOperationsRequest{
@@ -994,15 +1048,15 @@ func TestInMemoryBuildQueueTokenPoolsKillParkedOperation(t *testing.T) {
 	require.NoError(t, err)
 	executeResponse := requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
 	testutil.RequireEqualProto(t, status.New(codes.Unavailable, "Operation was killed administratively").Proto(), executeResponse.Status)
-	env.requirePool("vcs", 1, 0)
-	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_EXECUTING, "vcs"))
+	env.requirePool("oranges", 1, 0)
+	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_EXECUTING, "oranges"))
 }
 
 // Killing all operations of a size class queue without workers also
 // cancels the parked ones.
 func TestInMemoryBuildQueueTokenPoolsKillSizeClassQueueWithoutWorkers(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 0, []uint32{0})
 	env.registerPlatformQueue(otherPlatformForTesting, 0, []uint32{0})
 	requireIdle(t, env.synchronize("worker1", otherPlatformForTesting, 0, idleWorkerState()))
@@ -1012,7 +1066,7 @@ func TestInMemoryBuildQueueTokenPoolsKillSizeClassQueueWithoutWorkers(t *testing
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		platform:      otherPlatformForTesting,
 	})
 	requireExecuting(t, env.synchronize("worker1", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(1))
@@ -1022,14 +1076,14 @@ func TestInMemoryBuildQueueTokenPoolsKillSizeClassQueueWithoutWorkers(t *testing
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	env.advance(time.Second)
 	stream3 := env.execute(&executeOptions{
 		hash:          tokenActionHash(3),
 		operationName: tokenOperationName(3),
 	})
-	env.requirePool("vcs", 1, 1)
+	env.requirePool("oranges", 1, 1)
 
 	_, err := env.bq.KillOperations(env.ctx, &buildqueuestate.KillOperationsRequest{
 		Filter: &buildqueuestate.KillOperationsRequest_Filter{
@@ -1049,20 +1103,20 @@ func TestInMemoryBuildQueueTokenPoolsKillSizeClassQueueWithoutWorkers(t *testing
 		executeResponse := requireOperationStage(t, stream, tokenOperationName(i+2), tokenActionHash(i+2), remoteexecution.ExecutionStage_COMPLETED)
 		testutil.RequireEqualProto(t, status.New(codes.Unavailable, "No workers").Proto(), executeResponse.Status)
 	}
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 }
 
 // A client that abandons a parked operation causes it to be removed
 // after the usual timeout, without disturbing the pool.
 func TestInMemoryBuildQueueTokenPoolsAbandonParkedOperation(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
@@ -1072,11 +1126,11 @@ func TestInMemoryBuildQueueTokenPoolsAbandonParkedOperation(t *testing.T) {
 	stream2, err := env.executeStream(ctxWithCancel, &executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	require.NoError(t, err)
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_QUEUED)
-	env.requirePool("vcs", 1, 1)
+	env.requirePool("oranges", 1, 1)
 
 	// Cancellation is processed asynchronously. Wait until the
 	// scheduler has scheduled the operation for removal.
@@ -1091,7 +1145,7 @@ func TestInMemoryBuildQueueTokenPoolsAbandonParkedOperation(t *testing.T) {
 	env.synchronize("worker1", platformForTesting, 0, executingWorkerState(tokenActionHash(1)))
 	env.advance(35 * time.Second)
 	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""))
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 }
 
 // A request that is in-flight deduplicated against a parked task is
@@ -1099,13 +1153,13 @@ func TestInMemoryBuildQueueTokenPoolsAbandonParkedOperation(t *testing.T) {
 // task starting once tokens become available.
 func TestInMemoryBuildQueueTokenPoolsDeduplicateOntoParkedTask(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		invocationID:  "0f0f22ec-908a-4ea7-8a78-b92ab4188e78",
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
@@ -1115,21 +1169,21 @@ func TestInMemoryBuildQueueTokenPoolsDeduplicateOntoParkedTask(t *testing.T) {
 	stream2 := env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		invocationID:  "0f0f22ec-908a-4ea7-8a78-b92ab4188e78",
 	})
-	env.requirePool("vcs", 1, 1)
+	env.requirePool("oranges", 1, 1)
 
 	env.advance(time.Second)
 	stream3 := env.execute(&executeOptions{
 		hash:              tokenActionHash(2),
 		operationName:     tokenOperationName(3),
-		tokens:            map[string]uint32{"vcs": 1},
+		tokens:            map[string]uint32{"oranges": 1},
 		invocationID:      "e4896008-d596-44c7-8df6-6ced53dff6b0",
 		selectorAbandoned: true,
 	})
-	env.requirePool("vcs", 1, 1)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(3)).BlockedOnToken)
+	env.requirePool("oranges", 1, 1)
+	require.Equal(t, "oranges", env.operation(tokenOperationName(3)).BlockedOnToken)
 
 	// Both invocations are active, but neither has queued
 	// operations in the heaps.
@@ -1163,7 +1217,7 @@ func TestInMemoryBuildQueueTokenPoolsDeduplicateOntoParkedTask(t *testing.T) {
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 	children, err = env.bq.ListInvocationChildren(env.ctx, &buildqueuestate.ListInvocationChildrenRequest{
 		InvocationName: invocationName,
 		Filter:         buildqueuestate.ListInvocationChildrenRequest_ACTIVE,
@@ -1180,22 +1234,22 @@ func TestInMemoryBuildQueueTokenPoolsDeduplicateOntoParkedTask(t *testing.T) {
 // acquires them again when it runs on the largest size class.
 func TestInMemoryBuildQueueTokenPoolsSizeClassRetry(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 0, []uint32{8})
-	requireIdle(t, env.synchronize("small", platformForTesting, 3, idleWorkerState()))
+	requireIdle(t, env.synchronize("apples", platformForTesting, 3, idleWorkerState()))
 	requireIdle(t, env.synchronize("large", platformForTesting, 8, idleWorkerState()))
 
 	learner1 := mock.NewMockLearner(env.ctrl)
 	stream := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 		sizeClasses:   []uint32{3, 8},
 		learner:       learner1,
 	})
-	requireExecuting(t, env.synchronize("small", platformForTesting, 3, idleWorkerState()), tokenActionHash(1))
+	requireExecuting(t, env.synchronize("apples", platformForTesting, 3, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 
 	// Failure on the small size class moves the task back to the
 	// QUEUED stage on the largest size class. No tokens are held
@@ -1203,28 +1257,28 @@ func TestInMemoryBuildQueueTokenPoolsSizeClassRetry(t *testing.T) {
 	learner2 := mock.NewMockLearner(env.ctrl)
 	learner1.EXPECT().Failed(false).Return(2*time.Minute, 5*time.Minute, learner2)
 	env.advance(time.Second)
-	requireIdle(t, env.synchronize("small", platformForTesting, 3, completedWorkerState(tokenActionHash(1), &remoteexecution.ExecuteResponse{
+	requireIdle(t, env.synchronize("apples", platformForTesting, 3, completedWorkerState(tokenActionHash(1), &remoteexecution.ExecuteResponse{
 		Result: &remoteexecution.ActionResult{ExitCode: 1},
 	})))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_QUEUED)
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("oranges", 0, 0)
 
 	requireExecuting(t, env.synchronize("large", platformForTesting, 8, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 
 	learner2.EXPECT().Succeeded(gomock.Any(), []uint32{3, 8}).Return(0, time.Duration(0), time.Duration(0), nil)
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("large", platformForTesting, 8, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("oranges", 0, 0)
 }
 
 // Background learning re-executes actions nobody waits for. That would
 // spend tokens, so it is skipped for token-requiring actions.
 func TestInMemoryBuildQueueTokenPoolsBackgroundLearningSkipped(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 10, []uint32{8})
 	requireIdle(t, env.synchronize("large", platformForTesting, 8, idleWorkerState()))
 
@@ -1232,7 +1286,7 @@ func TestInMemoryBuildQueueTokenPoolsBackgroundLearningSkipped(t *testing.T) {
 	stream := env.execute(&executeOptions{
 		hash:           tokenActionHash(1),
 		operationName:  tokenOperationName(1),
-		tokens:         map[string]uint32{"vcs": 1},
+		tokens:         map[string]uint32{"oranges": 1},
 		sizeClasses:    []uint32{8},
 		sizeClassIndex: 0,
 		learner:        learner,
@@ -1249,7 +1303,7 @@ func TestInMemoryBuildQueueTokenPoolsBackgroundLearningSkipped(t *testing.T) {
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("large", platformForTesting, 8, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("oranges", 0, 0)
 	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""))
 }
 
@@ -1257,20 +1311,20 @@ func TestInMemoryBuildQueueTokenPoolsBackgroundLearningSkipped(t *testing.T) {
 // returns the task's tokens.
 func TestInMemoryBuildQueueTokenPoolsStaleWorkerReleasesTokens(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 
 	env.advance(2 * time.Minute)
-	env.requirePool("vcs", 0, 0)
+	env.requirePool("oranges", 0, 0)
 	executeResponse := requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	require.Equal(t, codes.Unavailable, status.FromProto(executeResponse.Status).Code())
 }
@@ -1282,17 +1336,17 @@ func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	configuration := tokenBuildQueueConfigurationForTesting
 	configuration.TokenPoolStartupGracePeriod = 20 * time.Second
 	env := newTokenTestEnv(t, &configuration, time.Unix(1000, 0))
-	env.registerPool("vcs", 1)
+	env.registerPool("oranges", 1)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	env.advance(5 * time.Second)
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
-	env.requirePool("vcs", 0, 1)
-	require.Equal(t, "vcs", env.operation(tokenOperationName(1)).BlockedOnToken)
+	env.requirePool("oranges", 0, 1)
+	require.Equal(t, "oranges", env.operation(tokenOperationName(1)).BlockedOnToken)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	env.advance(time.Second)
@@ -1306,27 +1360,27 @@ func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	// The grace period ends at 1020. Any interaction with the
 	// scheduler past that time runs the cleanup queue.
 	env.advance(15 * time.Second)
-	env.requirePool("vcs", 0, 1)
+	env.requirePool("oranges", 0, 1)
 	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("vcs", 1, 0)
+	env.requirePool("oranges", 1, 0)
 }
 
 // BuildQueueState exposes pools, per-operation requirements and the
 // token filter of ListOperations.
 func TestInMemoryBuildQueueTokenPoolsBuildQueueState(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
-	env.registerPool("vcs", 2)
-	env.registerPool("dc", 1)
-	require.NoError(t, env.bq.RegisterTokenPool(util.Must(digest.NewInstanceName("other")), "vcs", 3))
-	testutil.RequireEqualStatus(t, status.Error(codes.AlreadyExists, "A token pool named \"vcs\" already exists for instance name prefix \"main\""), env.bq.RegisterTokenPool(util.Must(digest.NewInstanceName("main")), "vcs", 1))
+	env.registerPool("oranges", 2)
+	env.registerPool("apples", 1)
+	require.NoError(t, env.bq.RegisterTokenPool(util.Must(digest.NewInstanceName("other")), "oranges", 3))
+	testutil.RequireEqualStatus(t, status.Error(codes.AlreadyExists, "A token pool named \"oranges\" already exists for instance name prefix \"main\""), env.bq.RegisterTokenPool(util.Must(digest.NewInstanceName("main")), "oranges", 1))
 	testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Token pool name must not be empty"), env.bq.RegisterTokenPool(util.Must(digest.NewInstanceName("main")), "", 1))
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
 	stream1 := env.execute(&executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-		tokens:        map[string]uint32{"dc": 1, "vcs": 1},
+		tokens:        map[string]uint32{"apples": 1, "oranges": 1},
 	})
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
@@ -1334,13 +1388,13 @@ func TestInMemoryBuildQueueTokenPoolsBuildQueueState(t *testing.T) {
 	env.execute(&executeOptions{
 		hash:          tokenActionHash(2),
 		operationName: tokenOperationName(2),
-		tokens:        map[string]uint32{"dc": 1},
+		tokens:        map[string]uint32{"apples": 1},
 	})
 	env.advance(time.Second)
 	env.execute(&executeOptions{
 		hash:          tokenActionHash(3),
 		operationName: tokenOperationName(3),
-		tokens:        map[string]uint32{"vcs": 1},
+		tokens:        map[string]uint32{"oranges": 1},
 	})
 	env.advance(time.Second)
 	env.execute(&executeOptions{
@@ -1351,32 +1405,32 @@ func TestInMemoryBuildQueueTokenPoolsBuildQueueState(t *testing.T) {
 	response, err := env.bq.ListPlatformQueues(env.ctx, &emptypb.Empty{})
 	require.NoError(t, err)
 	require.Len(t, response.TokenPools, 3)
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "main", Name: "dc", Capacity: 1, InUse: 1, BlockedTasksCount: 1}, response.TokenPools[0])
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "main", Name: "vcs", Capacity: 2, InUse: 1, BlockedTasksCount: 0}, response.TokenPools[1])
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "other", Name: "vcs", Capacity: 3, InUse: 0, BlockedTasksCount: 0}, response.TokenPools[2])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "main", Name: "apples", Capacity: 1, InUse: 1, BlockedTasksCount: 1}, response.TokenPools[0])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "main", Name: "oranges", Capacity: 2, InUse: 1, BlockedTasksCount: 0}, response.TokenPools[1])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenPoolState{InstanceNamePrefix: "other", Name: "oranges", Capacity: 3, InUse: 0, BlockedTasksCount: 0}, response.TokenPools[2])
 
 	o := env.operation(tokenOperationName(1))
 	require.Len(t, o.TokenRequirements, 2)
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "dc", Amount: 1}, o.TokenRequirements[0])
-	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "vcs", Amount: 1}, o.TokenRequirements[1])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "apples", Amount: 1}, o.TokenRequirements[0])
+	testutil.RequireEqualProto(t, &buildqueuestate.TokenRequirement{Name: "oranges", Amount: 1}, o.TokenRequirements[1])
 	require.Empty(t, o.BlockedOnToken)
-	require.Equal(t, "dc", env.operation(tokenOperationName(2)).BlockedOnToken)
+	require.Equal(t, "apples", env.operation(tokenOperationName(2)).BlockedOnToken)
 	require.Empty(t, env.operation(tokenOperationName(3)).BlockedOnToken)
 	require.Empty(t, env.operation(tokenOperationName(4)).TokenRequirements)
 
-	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_EXECUTING, "dc"))
-	require.Equal(t, []string{tokenOperationName(2)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "dc"))
-	require.Equal(t, []string{tokenOperationName(1), tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, "vcs"))
-	require.Equal(t, []string{tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "vcs"))
+	require.Equal(t, []string{tokenOperationName(1)}, env.listOperations(remoteexecution.ExecutionStage_EXECUTING, "apples"))
+	require.Equal(t, []string{tokenOperationName(2)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "apples"))
+	require.Equal(t, []string{tokenOperationName(1), tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, "oranges"))
+	require.Equal(t, []string{tokenOperationName(3)}, env.listOperations(remoteexecution.ExecutionStage_QUEUED, "oranges"))
 	require.Len(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""), 4)
-	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, "verdi"))
+	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, "pears"))
 	// Filters match on the pool key, not just the name. Only
 	// parked operations match when asked for blocked ones.
-	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_UNKNOWN, "other", "vcs", false))
-	require.Equal(t, []string{tokenOperationName(2)}, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "dc", true))
-	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "vcs", true))
+	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_UNKNOWN, "other", "oranges", false))
+	require.Equal(t, []string{tokenOperationName(2)}, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "apples", true))
+	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "oranges", true))
 	_, err = env.bq.ListOperations(env.ctx, &buildqueuestate.ListOperationsRequest{
-		FilterTokenName:               "vcs",
+		FilterTokenName:               "oranges",
 		FilterTokenInstanceNamePrefix: "//bad",
 	})
 	testutil.RequireEqualStatus(t, status.Error(codes.InvalidArgument, "Invalid token instance name prefix \"//bad\": Instance name contains redundant slashes"), err)

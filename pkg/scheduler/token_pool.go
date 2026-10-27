@@ -288,10 +288,11 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 // tokens that no smaller task can use, and wait for as long as that
 // is the case. In this order:
 //
-//   - A task that the pools cannot satisfy closes all of its pools to
-//     the tasks behind it. This head-of-line blocking is what prevents
-//     a stream of requests for few tokens from starving a request for
-//     many.
+//   - A task that the pools cannot satisfy right now is passed over
+//     without holding any tokens, and does not delay the tasks behind
+//     it. A steady stream of requests for few tokens may thus starve a
+//     request for many, or for several pools; that is accepted, as
+//     tokens set aside for it would leave licenses unused.
 //   - A task that the pools can satisfy, but for which no worker is
 //     available, is passed over without holding any tokens. Setting
 //     tokens aside for it would leave them unused for as long as the
@@ -324,19 +325,12 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 		)
 	})
 
-	closed := map[*tokenPool]struct{}{}
 	for _, t := range parked {
-		if q := t.firstUnavailablePool(closed); q != nil {
-			for _, r := range t.tokenRequirements {
-				closed[r.pool] = struct{}{}
-			}
+		if q := t.firstInsufficientParkedPool(); q != nil {
 			if !dryRun && q != t.blockedPool {
 				// Report the pool the task waits for.
 				t.blockedPool.removeBlockedTask(t)
 				q.insertBlockedTask(t)
-			}
-			if bq.allTokenPoolsUnavailable(closed) {
-				return nil
 			}
 			continue
 		}
@@ -353,7 +347,7 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 			t.assignOrEnqueue(bq, false)
 			t.unpark()
 			t.reportNonFinalStageChange()
-			if bq.allTokenPoolsUnavailable(closed) {
+			if bq.allTokenPoolsExhausted() {
 				return nil
 			}
 		}
@@ -361,20 +355,20 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 	return nil
 }
 
-// firstUnavailablePool returns the first pool of a task that is
-// closed or cannot satisfy it, or nil if the task may take its tokens.
-func (t *task) firstUnavailablePool(closed map[*tokenPool]struct{}) *tokenPool {
+// firstInsufficientParkedPool returns the first pool of a parked task
+// that cannot satisfy it, or nil if the task may take its tokens.
+func (t *task) firstInsufficientParkedPool() *tokenPool {
 	for _, r := range t.tokenRequirements {
-		if _, ok := closed[r.pool]; ok || r.pool.inUse+r.amount > r.pool.capacity {
+		if r.pool.inUse+r.amount > r.pool.capacity {
 			return r.pool
 		}
 	}
 	return nil
 }
 
-func (bq *InMemoryBuildQueue) allTokenPoolsUnavailable(closed map[*tokenPool]struct{}) bool {
+func (bq *InMemoryBuildQueue) allTokenPoolsExhausted() bool {
 	for _, p := range bq.tokenPools {
-		if _, ok := closed[p]; !ok && p.inUse < p.capacity {
+		if p.inUse < p.capacity {
 			return false
 		}
 	}
