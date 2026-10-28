@@ -2538,9 +2538,6 @@ func (t *task) schedule(bq *InMemoryBuildQueue, initial bool) {
 			t.registerQueuedStageStarted(bq, &t.getCurrentSizeClassQueue().tasksScheduledQueue)
 		}
 		t.park(bq, p)
-		// The task may still run right away, if the tasks
-		// parked before it have no worker available.
-		bq.dispatchParkedTasks(nil, false)
 		return
 	}
 	t.assignOrEnqueue(bq, initial)
