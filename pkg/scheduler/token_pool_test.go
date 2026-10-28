@@ -62,6 +62,10 @@ var otherPlatformForTesting = &remoteexecution.Platform{
 	},
 }
 
+type fakeTimer struct{}
+
+func (fakeTimer) Stop() bool { return true }
+
 type tokenTestEnv struct {
 	t      *testing.T
 	ctrl   *gomock.Controller
@@ -90,8 +94,10 @@ func newTokenTestEnv(t *testing.T, configuration *scheduler.InMemoryBuildQueueCo
 	clk := mock.NewMockClock(ctrl)
 	clk.EXPECT().Now().DoAndReturn(env.getNow).AnyTimes()
 	clk.EXPECT().NewTimer(gomock.Any()).DoAndReturn(func(d time.Duration) (clock.Timer, <-chan time.Time) {
-		timer := mock.NewMockTimer(ctrl)
-		timer.EXPECT().Stop().Return(true).AnyTimes()
+		// Not a gomock timer: a server goroutine woken as a test
+		// returns may create one while the controller verifies
+		// expectations at cleanup.
+		var timer fakeTimer
 		if d == tokenIdleWorkerSynchronizationInterval {
 			ch := make(chan time.Time, 1)
 			ch <- env.getNow()
@@ -735,6 +741,21 @@ func TestInMemoryBuildQueueTokenPoolsExhaustedPoolDoesNotBlockOthers(t *testing.
 	env.requirePool("oranges", 2, 0)
 	env.requirePool("apples", 1, 2)
 
+	// A further task needing only "oranges" waits for it, and takes
+	// the next token it frees, although tasks waiting for "apples"
+	// were parked before it.
+	env.advance(time.Second)
+	env.execute(&executeOptions{
+		hash:          tokenActionHash(6),
+		operationName: tokenOperationName(6),
+		tokens:        map[string]uint32{"oranges": 1},
+	})
+	require.Equal(t, "oranges", env.operation(tokenOperationName(6)).BlockedOnToken)
+	env.advance(time.Second)
+	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, completedWorkerState(tokenActionHash(4), successfulExecuteResponse())), tokenActionHash(6))
+	env.requirePool("oranges", 2, 0)
+	env.requirePool("apples", 1, 2)
+
 	// Releasing "apples" is not enough while "oranges" is exhausted;
 	// the waiting tasks now report "oranges".
 	env.advance(time.Second)
@@ -745,9 +766,43 @@ func TestInMemoryBuildQueueTokenPoolsExhaustedPoolDoesNotBlockOthers(t *testing.
 
 	// Releasing a token of "oranges" runs the first of them.
 	env.advance(time.Second)
-	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, completedWorkerState(tokenActionHash(4), successfulExecuteResponse())), tokenActionHash(2))
+	requireExecuting(t, env.synchronize("worker3", platformForTesting, 0, completedWorkerState(tokenActionHash(5), successfulExecuteResponse())), tokenActionHash(2))
 	env.requirePool("oranges", 2, 1)
 	env.requirePool("apples", 1, 0)
+}
+
+// When one release lets several parked tasks fit, the one parked first
+// runs first, whatever its size.
+func TestInMemoryBuildQueueTokenPoolsOlderParkedTaskFirst(t *testing.T) {
+	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
+	env.registerPool("oranges", 4)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
+
+	env.execute(&executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"oranges": 4},
+	})
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+	for i, n := range []uint32{4, 1} {
+		env.advance(time.Second)
+		env.execute(&executeOptions{
+			hash:          tokenActionHash(2 + i),
+			operationName: tokenOperationName(2 + i),
+			tokens:        map[string]uint32{"oranges": n},
+		})
+	}
+	requireIdle(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()))
+	env.requirePool("oranges", 4, 2)
+
+	env.advance(time.Second)
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(2))
+	requireIdle(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()))
+	env.requirePool("oranges", 4, 1)
+
+	env.advance(time.Second)
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())), tokenActionHash(3))
+	env.requirePool("oranges", 1, 0)
 }
 
 // A task requiring two pools moves to the FIFO of the pool that
@@ -1236,7 +1291,7 @@ func TestInMemoryBuildQueueTokenPoolsSizeClassRetry(t *testing.T) {
 	env := newTokenTestEnv(t, &tokenBuildQueueConfigurationForTesting, time.Unix(1000, 0))
 	env.registerPool("oranges", 1)
 	env.registerPlatformQueue(platformForTesting, 0, []uint32{8})
-	requireIdle(t, env.synchronize("apples", platformForTesting, 3, idleWorkerState()))
+	requireIdle(t, env.synchronize("small", platformForTesting, 3, idleWorkerState()))
 	requireIdle(t, env.synchronize("large", platformForTesting, 8, idleWorkerState()))
 
 	learner1 := mock.NewMockLearner(env.ctrl)
@@ -1247,7 +1302,7 @@ func TestInMemoryBuildQueueTokenPoolsSizeClassRetry(t *testing.T) {
 		sizeClasses:   []uint32{3, 8},
 		learner:       learner1,
 	})
-	requireExecuting(t, env.synchronize("apples", platformForTesting, 3, idleWorkerState()), tokenActionHash(1))
+	requireExecuting(t, env.synchronize("small", platformForTesting, 3, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("oranges", 1, 0)
 
@@ -1257,7 +1312,7 @@ func TestInMemoryBuildQueueTokenPoolsSizeClassRetry(t *testing.T) {
 	learner2 := mock.NewMockLearner(env.ctrl)
 	learner1.EXPECT().Failed(false).Return(2*time.Minute, 5*time.Minute, learner2)
 	env.advance(time.Second)
-	requireIdle(t, env.synchronize("apples", platformForTesting, 3, completedWorkerState(tokenActionHash(1), &remoteexecution.ExecuteResponse{
+	requireIdle(t, env.synchronize("small", platformForTesting, 3, completedWorkerState(tokenActionHash(1), &remoteexecution.ExecuteResponse{
 		Result: &remoteexecution.ActionResult{ExitCode: 1},
 	})))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_QUEUED)

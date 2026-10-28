@@ -260,10 +260,9 @@ func (bq *InMemoryBuildQueue) endTokenPoolStartupGrace() {
 // firstInsufficientPool returns the pool that prevents a task that is
 // not parked from being assigned to a worker right now, or nil if the
 // task may run. Token-free tasks may always run. During the startup
-// grace period no token-requiring task may run. A task that never was
-// parked may not take tokens from a pool for which tasks are parked,
-// as that would bypass their order; it is parked instead, and
-// dispatchParkedTasks() decides when it runs.
+// grace period no token-requiring task may run. Tasks already parked
+// do not hold back one that fits, as parked tasks have no claim on
+// tokens (see dispatchParkedTasks()).
 func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 	if len(t.tokenRequirements) == 0 {
 		return nil
@@ -271,22 +270,22 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 	if bq.tokenPoolStartupGraceActive {
 		return t.tokenRequirements[0].pool
 	}
-	for _, r := range t.tokenRequirements {
-		if p := r.pool; len(p.blocked) > 0 || p.inUse+r.amount > p.capacity {
-			return p
-		}
-	}
-	return nil
+	return t.firstShortPool()
+}
+
+// fits returns whether the pool has room for the requirement. The sum
+// is taken in 64 bits, as capacities may approach the uint32 limit.
+func (r tokenRequirement) fits() bool {
+	return uint64(r.pool.inUse)+uint64(r.amount) <= uint64(r.pool.capacity)
 }
 
 // dispatchParkedTasks hands tokens to parked tasks that a worker can
-// run right now. Tasks of smaller size classes go first, so that
-// tokens are not held by the larger, longer running actions while
-// small ones wait; within a size class, tasks go in the order in which
-// they first became blocked. Size classes of different platform queues
-// are compared by number. Tasks of larger size classes only get
-// tokens that no smaller task can use, and wait for as long as that
-// is the case. In this order:
+// run right now. Tasks of smaller size classes go first; within a size
+// class, tasks go in the order in which they first became blocked.
+// Size classes of different platform queues are compared by number.
+// This order decides only among tasks that fit: a larger size class
+// task may take tokens that a smaller one needs more of than are free.
+// In this order:
 //
 //   - A task that the pools cannot satisfy right now is passed over
 //     without holding any tokens, and does not delay the tasks behind
@@ -306,16 +305,14 @@ func (bq *InMemoryBuildQueue) firstInsufficientPool(t *task) *tokenPool {
 // is returned for the caller to assign to the worker. When dryRun is
 // set, the first task that may run is returned and nothing changes.
 func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dryRun bool) *task {
-	if bq.tokenPoolStartupGraceActive {
+	if bq.tokenPoolStartupGraceActive || bq.allTokenPoolsExhausted() {
 		return nil
 	}
 	var parked []*task
-	hasFreeTokens := false
 	for _, p := range bq.tokenPools {
 		parked = append(parked, p.blocked...)
-		hasFreeTokens = hasFreeTokens || p.inUse < p.capacity
 	}
-	if !hasFreeTokens || len(parked) == 0 {
+	if len(parked) == 0 {
 		return nil
 	}
 	slices.SortFunc(parked, func(a, b *task) int {
@@ -326,7 +323,7 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 	})
 
 	for _, t := range parked {
-		if q := t.firstInsufficientParkedPool(); q != nil {
+		if q := t.firstShortPool(); q != nil {
 			if !dryRun && q != t.blockedPool {
 				// Report the pool the task waits for.
 				t.blockedPool.removeBlockedTask(t)
@@ -355,11 +352,11 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 	return nil
 }
 
-// firstInsufficientParkedPool returns the first pool of a parked task
-// that cannot satisfy it, or nil if the task may take its tokens.
-func (t *task) firstInsufficientParkedPool() *tokenPool {
+// firstShortPool returns the first pool of a task that cannot satisfy
+// it, or nil if the task may take its tokens.
+func (t *task) firstShortPool() *tokenPool {
 	for _, r := range t.tokenRequirements {
-		if r.pool.inUse+r.amount > r.pool.capacity {
+		if !r.fits() {
 			return r.pool
 		}
 	}
