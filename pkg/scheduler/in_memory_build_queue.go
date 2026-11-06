@@ -44,6 +44,26 @@ import (
 	"cloud.google.com/go/longrunning/autogen/longrunningpb"
 )
 
+// queuedDurationBuckets extends the 1ms to 1000s buckets of the other
+// duration histograms past 1000s, where queue waits of hours otherwise
+// all land in +Inf.
+func queuedDurationBuckets() []float64 {
+	b := append(
+		util.DecimalExponentialBuckets(-3, 6, 2),
+		300,    // 5m
+		1800,   // 30m
+		3600,   // 1h
+		7200,   // 2h
+		14400,  // 4h
+		28800,  // 8h
+		57600,  // 16h
+		115200, // 32h: anything longer lands in +Inf
+	)
+	// 300 falls between existing edges; Prometheus requires them sorted.
+	sort.Float64s(b)
+	return b
+}
+
 var (
 	inMemoryBuildQueuePrometheusMetrics sync.Once
 
@@ -109,7 +129,7 @@ var (
 			Subsystem: "builder",
 			Name:      "in_memory_build_queue_tasks_queued_duration_seconds",
 			Help:      "Time in seconds that tasks were queued before executing.",
-			Buckets:   util.DecimalExponentialBuckets(-3, 6, 2),
+			Buckets:   queuedDurationBuckets(),
 		},
 		[]string{"instance_name_prefix", "platform", "size_class"},
 	)
