@@ -37,6 +37,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// taskLogBufferedLines is the number of task log lines that may wait
+// for standard output. A burst larger than this loses lines, which the
+// sequence numbers on the lines reveal.
+const taskLogBufferedLines = 65536
+
 func main() {
 	program.RunMain(func(ctx context.Context, siblingsGroup, dependenciesGroup program.Group) error {
 		if len(os.Args) != 2 {
@@ -134,6 +139,15 @@ func main() {
 			}
 			tokenPoolStartupGracePeriod = d.AsDuration()
 		}
+		var taskLog func(line *scheduler.TaskLogLine)
+		if configuration.EnableTaskLog {
+			taskLogWriter := scheduler.NewTaskLogWriter(os.Stdout, taskLogBufferedLines)
+			dependenciesGroup.Go(func(ctx context.Context, siblingsGroup, dependenciesGroup program.Group) error {
+				taskLogWriter.Run(ctx)
+				return nil
+			})
+			taskLog = taskLogWriter.Write
+		}
 
 		// Create in-memory build queue.
 		// TODO: Make timeouts configurable.
@@ -156,6 +170,7 @@ func main() {
 				WorkerTaskRetryCount:                9,
 				WorkerWithNoSynchronizationsTimeout: time.Minute,
 				TokenPoolStartupGracePeriod:         tokenPoolStartupGracePeriod,
+				TaskLog:                             taskLog,
 			},
 			int(configuration.MaximumMessageSizeBytes),
 			actionRouter,

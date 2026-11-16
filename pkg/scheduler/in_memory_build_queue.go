@@ -255,6 +255,11 @@ type InMemoryBuildQueueConfiguration struct {
 	// about, until they resynchronize and are told to go idle.
 	// Zero disables the grace period.
 	TokenPoolStartupGracePeriod time.Duration
+
+	// TaskLog, when set, receives a line for every change in the
+	// state of a task. It is called with the build queue's lock
+	// held, so it must not block. TaskLogWriter.Write qualifies.
+	TaskLog func(line *TaskLogLine)
 }
 
 // InMemoryBuildQueue implements a BuildQueue that can distribute
@@ -297,6 +302,8 @@ type InMemoryBuildQueue struct {
 	// Sequence number handed to tasks the first time they are
 	// parked on a token pool. It orders the pools' FIFOs.
 	lastTokenSequence uint64
+
+	taskLog taskLogState
 
 	// Time value that is updated during every mutation of build
 	// queue state. This reduces the number of clock accesses, while
@@ -380,6 +387,8 @@ func NewInMemoryBuildQueue(contentAddressableStorage blobstore.BlobAccess, clock
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolInUse)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolBlockedTasks)
 		prometheus.MustRegister(inMemoryBuildQueueTokenPoolRejectionsTotal)
+
+		prometheus.MustRegister(inMemoryBuildQueueTaskLogLinesLostTotal)
 	})
 
 	now := clock.Now()
@@ -407,6 +416,7 @@ func NewInMemoryBuildQueue(contentAddressableStorage blobstore.BlobAccess, clock
 		bq.tokenPoolStartupGraceActive = true
 		bq.cleanupQueue.add(&bq.tokenPoolStartupGraceCleanupKey, now.Add(gracePeriod), bq.endTokenPoolStartupGrace)
 	}
+	bq.startTaskLog(now)
 	return bq
 }
 
@@ -557,6 +567,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 			// invocation. Simply wait on the operation that
 			// already exists.
 			scq.inFlightDeduplicationsSameInvocation.Inc()
+			bq.logTaskAttached(o, requestMetadata, true)
 			return o.waitExecution(bq, out)
 		}
 
@@ -583,6 +594,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 			panic("Task in unexpected stage")
 		}
 		scq.inFlightDeduplicationsOtherInvocation.Inc()
+		bq.logTaskAttached(o, requestMetadata, true)
 		return o.waitExecution(bq, out)
 	}
 
@@ -643,6 +655,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 	i := scq.getOrCreateInvocation(bq, invocationKeys)
 	o := t.newOperation(bq, in.ExecutionPolicy.GetPriority(), i, false)
 	t.schedule(bq, true)
+	bq.logTaskAttached(o, requestMetadata, false)
 	return o.waitExecution(bq, out)
 }
 
@@ -2412,6 +2425,7 @@ func (o *operation) remove(bq *InMemoryBuildQueue) {
 			i.decrementExecutingWorkersCount(bq, t.currentWorker)
 		}
 	}
+	bq.logTaskDetached(o)
 	delete(t.operations, o.invocation)
 }
 
@@ -2508,6 +2522,9 @@ type task struct {
 	// Position of the task in the token pools' FIFOs, assigned
 	// the first time it is parked. Zero if it never was.
 	tokenSequence uint64
+
+	// Identifies the task in the task log. Zero if logging is off.
+	logID uint64
 
 	executeResponse   *remoteexecution.ExecuteResponse
 	stageChangeWakeup chan struct{}
@@ -2691,6 +2708,7 @@ func (t *task) complete(bq *InMemoryBuildQueue, executeResponse *remoteexecution
 	for i := range t.operations {
 		i.decrementExecutingWorkersCount(bq, t.currentWorker)
 	}
+	bq.logTaskFinished(t, executeResponse, completedByWorker)
 	t.currentWorker.currentTask = nil
 	t.currentWorker = nil
 	// Tokens are released before the task may be rescheduled on
@@ -2819,6 +2837,7 @@ func (t *task) registerQueuedStageStarted(bq *InMemoryBuildQueue, tasksScheduled
 		tasksScheduledCounterVec.doNotCacheFalse.Inc()
 	}
 	t.currentStageStartTime = bq.now
+	bq.logTaskQueued(t)
 }
 
 // registerQueuedStageFinished updates Prometheus metrics related to the
@@ -2966,6 +2985,7 @@ func (w *worker) assignUnqueuedTask(bq *InMemoryBuildQueue, t *task, stickinessR
 	w.currentTask = t
 	t.currentWorker = w
 	t.acquireTokens()
+	bq.logTaskExecuting(t, w)
 	t.retryCount = 0
 	for i := range t.operations {
 		i.incrementExecutingWorkersCount(bq, w)

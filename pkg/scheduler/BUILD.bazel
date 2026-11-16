@@ -4,6 +4,7 @@ go_library(
     name = "scheduler",
     srcs = [
         "in_memory_build_queue.go",
+        "task_log.go",
         "token_pool.go",
     ],
     importpath = "github.com/buildbarn/bb-remote-execution/pkg/scheduler",
@@ -45,6 +46,7 @@ go_test(
     name = "scheduler_test",
     srcs = [
         "in_memory_build_queue_test.go",
+        "task_log_test.go",
         "token_invariants_test.go",
         "token_pool_test.go",
     ],

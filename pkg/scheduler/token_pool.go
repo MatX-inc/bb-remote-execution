@@ -479,6 +479,7 @@ func (t *task) park(bq *InMemoryBuildQueue, p *tokenPool) {
 		}
 	}
 	p.insertBlockedTask(t)
+	bq.logTaskParked(t)
 }
 
 // unpark removes a parked task from its pool's FIFO. The caller has
