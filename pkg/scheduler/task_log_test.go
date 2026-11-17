@@ -20,7 +20,6 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-// taskLogRecorder is the TaskLog of the build queue under test.
 type taskLogRecorder struct {
 	lock  sync.Mutex
 	lines []*scheduler.TaskLogLine
@@ -61,9 +60,8 @@ func taskLogLineJSON(t *testing.T, line *scheduler.TaskLogLine) string {
 	return "{" + s
 }
 
-// requireReplayMatchesPools replays the lines and checks what every
-// consumer relies on: sequence numbers without gaps, and tokens held
-// according to the lines equal to what the scheduler reports.
+// requireReplayMatchesPools checks that Seq has no gaps and that the
+// tokens held according to the lines are those the scheduler reports.
 func (r *taskLogRecorder) requireReplayMatchesPools(env *tokenTestEnv, pools ...string) {
 	t := env.t
 	tokens := map[uint64][]scheduler.TaskLogTokens{}

@@ -186,16 +186,11 @@ message ApplicationConfiguration {
   // Recommended value: 20s, or unset to disable.
   google.protobuf.Duration token_pool_startup_grace_period = 101;
 
-  // When set, write a line of JSON to standard output for every change
-  // in the state of a task (queued, parked on a token pool, executing
-  // on a worker, finished, removed) and for every Execute() call that
-  // waits for one. BuildQueueState only shows the present; these lines
-  // allow the state of the scheduler at any past moment to be
-  // reconstructed. Their fields are documented on TaskLogLine in
-  // pkg/scheduler/task_log.go.
-  //
-  // Lines that standard output does not accept quickly enough are
-  // dropped, which a gap in their sequence numbers reveals.
+  // Write a line of JSON to standard output for every change in the
+  // state of a task, from which the queue at any past moment can be
+  // rebuilt. TaskLogLine in pkg/scheduler/task_log.go documents the
+  // lines. Lines that standard output does not accept quickly enough
+  // are dropped.
   bool enable_task_log = 102;
 }
 

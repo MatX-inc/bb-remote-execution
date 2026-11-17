@@ -257,8 +257,7 @@ type InMemoryBuildQueueConfiguration struct {
 	TokenPoolStartupGracePeriod time.Duration
 
 	// TaskLog, when set, receives a line for every change in the
-	// state of a task. It is called with the build queue's lock
-	// held, so it must not block. TaskLogWriter.Write qualifies.
+	// state of a task. It must not block.
 	TaskLog func(line *TaskLogLine)
 }
 

@@ -11,24 +11,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// The task log is one line of JSON for every change in the state of a
-// task: enough to reconstruct, at any past moment, which tasks were
-// queued, parked on a token pool or executing, on which worker, and on
-// behalf of which invocations. BuildQueueState only shows the present.
+// The task log is one line of JSON per change in the state of a task,
+// from which the queue at any past moment can be rebuilt.
 //
-// Lines are numbered per scheduler process, in the order in which the
-// changes happened. A consumer orders them by (Boot, Seq) and drops
-// duplicates; a gap in Seq is a lost line. T is the time of the call
-// into the scheduler that caused the change, so lines of one call share
-// it.
-//
-// A scheduler restart loses every task. The next process logs "start"
-// under a new Boot, at which point everything left open by the previous
-// one has ended.
-//
-// Nothing repeats a lost line. A task whose last lines were lost stays
-// open in a replay until the next "start"; the token pools in the
-// heartbeats are what the scheduler itself counted.
+// Lines are numbered per scheduler process: order them by (Boot, Seq).
+// A gap in Seq is a lost line. A restart logs "start" under a new Boot,
+// which ends everything the previous process left open.
 
 const (
 	taskLogHeartbeatInterval = 10 * time.Second
@@ -55,45 +43,29 @@ type TaskLogTokens struct {
 	Blocked            int    `json:"blocked,omitempty"`
 }
 
-// TaskLogLine is a single line of the task log. Seq, Boot, T and Ev
-// are set on every line; which other fields are set depends on Ev. A
-// number or boolean that is absent from the JSON is zero or false.
+// TaskLogLine is a line of the task log. Seq, Boot, T and Ev are
+// always set; the other fields depend on Ev:
 //
-//   - "start": the scheduler process started. While the token pool
-//     startup grace period lasts, tasks that require tokens are parked
-//     regardless of the state of their pools.
-//   - "heartbeat": written every ten seconds while the scheduler
-//     receives calls. Carries the token pools, against which a consumer
-//     can check the tokens it believes to be held, and the number of
-//     tasks logged so far.
-//   - "queued": a task entered the QUEUED stage, either for the first
-//     time or to be retried on the largest size class. Describes the
-//     task.
+//   - "start": the scheduler process started.
+//   - "heartbeat": written every ten seconds; carries the token pools.
+//   - "queued": a task was queued, or queued again to be retried on
+//     the largest size class. Describes the task.
 //   - "attached": an Execute() call started waiting for a task. Names
-//     the invocation, which the other lines don't.
-//   - "parked": a queued task started waiting for a token pool. It
-//     stops waiting at its next "executing" or "finished" line. Token
-//     is the pool that was short at that moment; the scheduler may
-//     report the task on another of its pools later, so the blocked
-//     counts of a heartbeat match a replay only in total.
-//   - "executing": a worker was assigned the task, and the task took
-//     its tokens.
-//   - "finished": the attempt ended, and its tokens were returned.
-//     Worker is absent if the task never executed. Result and GRPCCode
-//     are those of the tasks_executing_duration_seconds metric. If a
-//     "queued" line for the same task follows, it is being retried.
-//   - "detached": an operation was removed, while others keep the task.
-//     This happens a while after its last client stopped waiting.
-//   - "removed": the last operation of a task was removed, and with it
-//     the task.
+//     the invocation.
+//   - "parked": a queued task started waiting for the token pool
+//     Token, until its next "executing" or "finished" line.
+//   - "executing": a worker took the task, and the task its tokens.
+//   - "finished": the attempt ended and returned its tokens. Worker is
+//     absent if the task never executed.
+//   - "detached": an operation was removed; others keep the task.
+//   - "removed": the task's last operation was removed.
 type TaskLogLine struct {
 	Seq  uint64 `json:"seq"`
 	Boot int64  `json:"boot"`
 	T    string `json:"t"`
 	Ev   string `json:"ev"`
 
-	// Identifies a task within a Boot. Action digests don't: tasks
-	// that must not be cached are not deduplicated.
+	// Identifies a task within a Boot.
 	Task      uint64 `json:"task,omitempty"`
 	Operation string `json:"operation,omitempty"`
 
@@ -111,8 +83,7 @@ type TaskLogLine struct {
 	// "queued", "executing" and "finished".
 	SizeClass uint32 `json:"size_class,omitempty"`
 
-	// "queued" and "executing": the tokens the task holds while
-	// executing.
+	// "queued" and "executing".
 	Tokens []TaskLogTokens `json:"tokens,omitempty"`
 
 	// "attached".
@@ -145,8 +116,6 @@ type TaskLogLine struct {
 	TokenPools []TaskLogTokens `json:"token_pools,omitempty"`
 }
 
-// taskLogState is the part of InMemoryBuildQueue that only the task
-// log uses.
 type taskLogState struct {
 	boot                int64
 	lastSeq             uint64
@@ -161,8 +130,7 @@ func truncateForTaskLog(s string) string {
 	return s
 }
 
-// logTask numbers a line and hands it to the configured sink. It is
-// called with the lock held, so the sink must not block.
+// logTask is called with the lock held, so the sink must not block.
 func (bq *InMemoryBuildQueue) logTask(now time.Time, line *TaskLogLine) {
 	bq.taskLog.lastSeq++
 	line.Seq = bq.taskLog.lastSeq
@@ -245,8 +213,6 @@ func (bq *InMemoryBuildQueue) logTaskQueued(t *task) {
 	bq.logTask(bq.now, line)
 }
 
-// logTaskAttached is called for every Execute() call that ends up
-// waiting for a task. Deduplicated is set if the task already existed.
 func (bq *InMemoryBuildQueue) logTaskAttached(o *operation, requestMetadata *remoteexecution.RequestMetadata, deduplicated bool) {
 	if bq.configuration.TaskLog == nil {
 		return
@@ -289,8 +255,8 @@ func (bq *InMemoryBuildQueue) logTaskExecuting(t *task, w *worker) {
 	})
 }
 
-// logTaskFinished is called by task.complete() while the task still
-// has its worker, before its tokens go to other tasks.
+// logTaskFinished must run while the task still has its worker and
+// tokens, so its line precedes that of the task that takes them.
 func (bq *InMemoryBuildQueue) logTaskFinished(t *task, executeResponse *remoteexecution.ExecuteResponse, completedByWorker bool) {
 	if bq.configuration.TaskLog == nil {
 		return
@@ -313,8 +279,7 @@ func (bq *InMemoryBuildQueue) logTaskFinished(t *task, executeResponse *remoteex
 	bq.logTask(bq.now, line)
 }
 
-// logTaskDetached is called right before an operation is removed from
-// its task.
+// logTaskDetached must run before the operation is removed.
 func (bq *InMemoryBuildQueue) logTaskDetached(o *operation) {
 	if bq.configuration.TaskLog == nil {
 		return
@@ -330,17 +295,16 @@ func (bq *InMemoryBuildQueue) logTaskDetached(o *operation) {
 	})
 }
 
-// TaskLogWriter writes task log lines to an io.Writer from a goroutine
-// of its own, so that InMemoryBuildQueue never waits for the sink. When
-// the sink falls behind by more than the buffer, lines are dropped and
-// counted; their sequence numbers go missing.
+// TaskLogWriter writes lines from a goroutine of its own, so that
+// InMemoryBuildQueue never waits for the sink. Lines that don't fit in
+// its buffer are dropped and counted.
 type TaskLogWriter struct {
 	w     io.Writer
 	lines chan *TaskLogLine
 }
 
 // NewTaskLogWriter creates a TaskLogWriter that buffers at most
-// bufferedLines lines. Run() must be called for lines to be written.
+// bufferedLines lines. Run() writes them.
 func NewTaskLogWriter(w io.Writer, bufferedLines int) *TaskLogWriter {
 	return &TaskLogWriter{
 		w:     w,
@@ -348,8 +312,7 @@ func NewTaskLogWriter(w io.Writer, bufferedLines int) *TaskLogWriter {
 	}
 }
 
-// Write a line without blocking. This method can be used as
-// InMemoryBuildQueueConfiguration.TaskLog.
+// Write queues a line without blocking.
 func (lw *TaskLogWriter) Write(line *TaskLogLine) {
 	select {
 	case lw.lines <- line:

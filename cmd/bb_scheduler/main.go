@@ -37,9 +37,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// taskLogBufferedLines is the number of task log lines that may wait
-// for standard output. A burst larger than this loses lines, which the
-// sequence numbers on the lines reveal.
+// Task log lines that may wait for standard output before being dropped.
 const taskLogBufferedLines = 65536
 
 func main() {
