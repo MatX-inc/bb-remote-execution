@@ -328,6 +328,7 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 				// Report the pool the task waits for.
 				t.blockedPool.removeBlockedTask(t)
 				q.insertBlockedTask(t)
+				bq.logTaskParked(t)
 			}
 			continue
 		}

@@ -187,10 +187,11 @@ message ApplicationConfiguration {
   google.protobuf.Duration token_pool_startup_grace_period = 101;
 
   // Write a line of JSON to standard output for every change in the
-  // state of a task, from which the queue at any past moment can be
-  // rebuilt. TaskLogLine in pkg/scheduler/task_log.go documents the
-  // lines. Lines that standard output does not accept quickly enough
-  // are dropped.
+  // state of a task, from which the tasks that were queued, parked on
+  // a token pool or executing at any past moment can be found.
+  // TaskLogLine in pkg/scheduler/task_log.go documents the lines.
+  // Lines that standard output does not accept quickly enough are
+  // dropped.
   bool enable_task_log = 102;
 }
 

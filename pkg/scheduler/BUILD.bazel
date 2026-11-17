@@ -46,6 +46,7 @@ go_test(
     name = "scheduler_test",
     srcs = [
         "in_memory_build_queue_test.go",
+        "task_log_check_test.go",
         "task_log_test.go",
         "token_invariants_test.go",
         "token_pool_test.go",

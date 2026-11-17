@@ -42,10 +42,9 @@ func (r *taskLogRecorder) all() []*scheduler.TaskLogLine {
 func (r *taskLogRecorder) taskLines(t *testing.T) []string {
 	var out []string
 	for _, line := range r.all() {
-		if line.Ev == "start" || line.Ev == "heartbeat" {
-			continue
+		if line.Ev != "start" {
+			out = append(out, taskLogLineJSON(t, line))
 		}
-		out = append(out, taskLogLineJSON(t, line))
 	}
 	return out
 }
@@ -60,39 +59,11 @@ func taskLogLineJSON(t *testing.T, line *scheduler.TaskLogLine) string {
 	return "{" + s
 }
 
-// requireReplayMatchesPools checks that Seq has no gaps and that the
-// tokens held according to the lines are those the scheduler reports.
-func (r *taskLogRecorder) requireReplayMatchesPools(env *tokenTestEnv, pools ...string) {
-	t := env.t
-	tokens := map[uint64][]scheduler.TaskLogTokens{}
-	executing := map[uint64]bool{}
-	inUse := map[string]uint32{}
-	for i, line := range r.all() {
-		require.Equal(t, uint64(i+1), line.Seq)
-		require.Equal(t, int64(1000000), line.Boot)
-		switch line.Ev {
-		case "queued":
-			tokens[line.Task] = line.Tokens
-		case "executing":
-			require.False(t, executing[line.Task])
-			require.Equal(t, tokens[line.Task], line.Tokens)
-			executing[line.Task] = true
-			for _, r := range tokens[line.Task] {
-				inUse[r.Name] += r.Amount
-				require.LessOrEqual(t, inUse[r.Name], env.pool(r.Name).Capacity, "line %d holds more tokens of pool %s than exist", line.Seq, r.Name)
-			}
-		case "finished":
-			if executing[line.Task] {
-				delete(executing, line.Task)
-				for _, r := range tokens[line.Task] {
-					inUse[r.Name] -= r.Amount
-				}
-			}
-		}
-	}
-	for _, name := range pools {
-		require.Equal(t, env.pool(name).InUse, inUse[name], "tokens of pool %s held according to the task log", name)
-	}
+// Have every test in this package write the task log, so that
+// task_log_check_test.go compares it against the build queue.
+func init() {
+	buildQueueConfigurationForTesting.TaskLog = func(*scheduler.TaskLogLine) {}
+	tokenBuildQueueConfigurationForTesting.TaskLog = func(*scheduler.TaskLogLine) {}
 }
 
 func newTaskLogTestEnv(t *testing.T) (*tokenTestEnv, *taskLogRecorder) {
@@ -121,12 +92,13 @@ func (env *tokenTestEnv) executeAs(ctx context.Context, o *executeOptions, toolI
 }
 
 const (
-	taskLogQueuedTask1 = `{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"digest_function":"MD5","instance_name":"main","instance_name_prefix":"main","platform":"{\"properties\":[{\"name\":\"cpu\",\"value\":\"armv6\"},{\"name\":\"os\",\"value\":\"linux\"}]}","target_id":"//pkg:target","tokens":[{"name":"oranges","amount":1}]}`
-	taskLogQueuedTask2 = `{"ev":"queued","task":2,"action_hash":"00000000000000000000000000000002","action_size_bytes":123,"digest_function":"MD5","instance_name":"main","instance_name_prefix":"main","platform":"{\"properties\":[{\"name\":\"cpu\",\"value\":\"armv6\"},{\"name\":\"os\",\"value\":\"linux\"}]}","target_id":"//pkg:target","tokens":[{"name":"oranges","amount":1}]}`
+	taskLogQueuedTask1 = `{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"instance_name":"main","instance_name_prefix":"main","target_id":"//pkg:target","tokens":[{"name":"oranges","amount":1}]}`
+	taskLogQueuedTask2 = `{"ev":"queued","task":2,"action_hash":"00000000000000000000000000000002","action_size_bytes":123,"instance_name":"main","instance_name_prefix":"main","target_id":"//pkg:target","tokens":[{"name":"oranges","amount":1}]}`
 )
 
 // A task that waits for a token is logged as parked until the line
-// that says it executes, and every Execute() call names its invocation.
+// that says it executes, which follows the line of the task whose token
+// it takes. Every operation names its invocation.
 func TestInMemoryBuildQueueTaskLogTokenWait(t *testing.T) {
 	env, recorder := newTaskLogTestEnv(t)
 	env.registerPool("oranges", 1)
@@ -157,7 +129,6 @@ func TestInMemoryBuildQueueTaskLogTokenWait(t *testing.T) {
 		selectorAbandoned: true,
 	}, "invocation3")
 	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(2), remoteexecution.ExecutionStage_QUEUED)
-	recorder.requireReplayMatchesPools(env, "oranges")
 
 	env.advance(time.Second)
 	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(2))
@@ -169,11 +140,10 @@ func TestInMemoryBuildQueueTaskLogTokenWait(t *testing.T) {
 		taskLogQueuedTask2,
 		`{"ev":"parked","task":2,"token":"oranges"}`,
 		`{"ev":"attached","task":2,"operation":"00000000-0000-0000-0000-000000000002","tool_invocation_id":"invocation2","correlated_invocations_id":"correlated-invocation2","action_mnemonic":"TestRunner"}`,
-		`{"ev":"attached","task":2,"operation":"00000000-0000-0000-0000-000000000003","deduplicated":true,"tool_invocation_id":"invocation3","correlated_invocations_id":"correlated-invocation3","action_mnemonic":"TestRunner"}`,
+		`{"ev":"attached","task":2,"operation":"00000000-0000-0000-0000-000000000003","tool_invocation_id":"invocation3","correlated_invocations_id":"correlated-invocation3","action_mnemonic":"TestRunner"}`,
 		`{"ev":"finished","task":1,"worker":{"hostname":"worker1"},"completed_by_worker":true,"result":"Success"}`,
 		`{"ev":"executing","task":2,"tokens":[{"name":"oranges","amount":1}],"worker":{"hostname":"worker1"}}`,
 	}, recorder.taskLines(t))
-	recorder.requireReplayMatchesPools(env, "oranges")
 
 	lines := recorder.all()
 	require.Equal(t, "start", lines[0].Ev)
@@ -219,9 +189,7 @@ func TestInMemoryBuildQueueTaskLogAbandonParked(t *testing.T) {
 		`{"ev":"parked","task":2,"token":"oranges"}`,
 		`{"ev":"attached","task":2,"operation":"00000000-0000-0000-0000-000000000002","tool_invocation_id":"invocation2","correlated_invocations_id":"correlated-invocation2","action_mnemonic":"TestRunner"}`,
 		`{"ev":"finished","task":2,"result":"Failure","grpc_code":"Canceled","status_message":"Task no longer has any waiting clients"}`,
-		`{"ev":"removed","task":2,"operation":"00000000-0000-0000-0000-000000000002"}`,
-	}, taskLines[len(taskLines)-4:])
-	recorder.requireReplayMatchesPools(env, "oranges")
+	}, taskLines[len(taskLines)-3:])
 }
 
 // A queued task that no worker took is removed the same way.
@@ -246,12 +214,10 @@ func TestInMemoryBuildQueueTaskLogAbandonQueued(t *testing.T) {
 	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""))
 
 	require.Equal(t, []string{
-		`{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"digest_function":"MD5","instance_name":"main","instance_name_prefix":"main","platform":"{\"properties\":[{\"name\":\"cpu\",\"value\":\"armv6\"},{\"name\":\"os\",\"value\":\"linux\"}]}","target_id":"//pkg:target"}`,
+		`{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"instance_name":"main","instance_name_prefix":"main","target_id":"//pkg:target"}`,
 		`{"ev":"attached","task":1,"operation":"00000000-0000-0000-0000-000000000001","tool_invocation_id":"invocation1","correlated_invocations_id":"correlated-invocation1","action_mnemonic":"TestRunner"}`,
 		`{"ev":"finished","task":1,"result":"Failure","grpc_code":"Canceled","status_message":"Task no longer has any waiting clients"}`,
-		`{"ev":"removed","task":1,"operation":"00000000-0000-0000-0000-000000000001"}`,
 	}, recorder.taskLines(t))
-	recorder.requireReplayMatchesPools(env)
 }
 
 // A task that fails on a small size class is queued again under the
@@ -280,7 +246,6 @@ func TestInMemoryBuildQueueTaskLogSizeClassRetry(t *testing.T) {
 	requireIdle(t, env.synchronize("small", platformForTesting, 3, completedWorkerState(tokenActionHash(1), &remoteexecution.ExecuteResponse{
 		Result: &remoteexecution.ActionResult{ExitCode: 1},
 	})))
-	recorder.requireReplayMatchesPools(env, "oranges")
 	requireExecuting(t, env.synchronize("large", platformForTesting, 8, idleWorkerState()), tokenActionHash(1))
 
 	learner2.EXPECT().Succeeded(gomock.Any(), []uint32{3, 8}).Return(0, time.Duration(0), time.Duration(0), nil)
@@ -290,12 +255,11 @@ func TestInMemoryBuildQueueTaskLogSizeClassRetry(t *testing.T) {
 	taskLines := recorder.taskLines(t)
 	require.Equal(t, []string{
 		`{"ev":"executing","task":1,"size_class":3,"tokens":[{"name":"oranges","amount":1}],"worker":{"hostname":"small"}}`,
-		`{"ev":"finished","task":1,"size_class":3,"worker":{"hostname":"small"},"completed_by_worker":true,"result":"NonZeroExitCode","exit_code":1}`,
+		`{"ev":"finished","task":1,"worker":{"hostname":"small"},"completed_by_worker":true,"result":"NonZeroExitCode"}`,
 		strings.Replace(taskLogQueuedTask1, `,"tokens"`, `,"size_class":8,"tokens"`, 1),
 		`{"ev":"executing","task":1,"size_class":8,"tokens":[{"name":"oranges","amount":1}],"worker":{"hostname":"large"}}`,
-		`{"ev":"finished","task":1,"size_class":8,"worker":{"hostname":"large"},"completed_by_worker":true,"result":"Success"}`,
+		`{"ev":"finished","task":1,"worker":{"hostname":"large"},"completed_by_worker":true,"result":"Success"}`,
 	}, taskLines[2:])
-	recorder.requireReplayMatchesPools(env, "oranges")
 }
 
 // A worker that disappears ends the attempt without completing it.
@@ -319,77 +283,111 @@ func TestInMemoryBuildQueueTaskLogStaleWorker(t *testing.T) {
 	require.Equal(t,
 		`{"ev":"finished","task":1,"worker":{"hostname":"worker1"},"result":"Failure","grpc_code":"Unavailable","status_message":"Worker {\"hostname\":\"worker1\"} disappeared while task was executing"}`,
 		taskLines[len(taskLines)-1])
-	recorder.requireReplayMatchesPools(env, "oranges")
 }
 
-// Heartbeats are written at most once per call into the scheduler, and
-// carry the token pools.
-func TestInMemoryBuildQueueTaskLogHeartbeat(t *testing.T) {
+// A parked task that comes to wait for another pool is parked again.
+func TestInMemoryBuildQueueTaskLogParkedOnOtherPool(t *testing.T) {
 	env, recorder := newTaskLogTestEnv(t)
-	env.registerPool("oranges", 2)
+	env.registerPool("apples", 1)
+	env.registerPool("oranges", 1)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
+	requireIdle(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()))
+
+	stream1 := env.executeAs(env.ctx, &executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"apples": 1},
+	}, "invocation1")
+	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_QUEUED)
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+
+	stream2 := env.executeAs(env.ctx, &executeOptions{
+		hash:          tokenActionHash(2),
+		operationName: tokenOperationName(2),
+		tokens:        map[string]uint32{"apples": 1, "oranges": 1},
+	}, "invocation2")
+	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_QUEUED)
+
+	stream3 := env.executeAs(env.ctx, &executeOptions{
+		hash:          tokenActionHash(3),
+		operationName: tokenOperationName(3),
+		tokens:        map[string]uint32{"oranges": 1},
+	}, "invocation3")
+	requireOperationStage(t, stream3, tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_QUEUED)
+	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(3))
+
+	// The apples come free, but the oranges are now taken.
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
+
+	taskLines := recorder.taskLines(t)
 	require.Equal(t, []string{
-		`{"ev":"start","heartbeat_seconds":10}`,
-	}, taskLogLinesJSON(t, recorder.all()))
-
-	env.advance(25 * time.Second)
-	env.requirePool("oranges", 0, 0)
-	env.requirePool("oranges", 0, 0)
-	env.advance(10 * time.Second)
-	env.requirePool("oranges", 0, 0)
-	require.Equal(t, []string{
-		`{"ev":"start","heartbeat_seconds":10}`,
-		`{"ev":"heartbeat","token_pools":[{"instance_name_prefix":"main","name":"oranges","capacity":2}]}`,
-		`{"ev":"heartbeat","token_pools":[{"instance_name_prefix":"main","name":"oranges","capacity":2}]}`,
-	}, taskLogLinesJSON(t, recorder.all()))
-	recorder.requireReplayMatchesPools(env, "oranges")
+		`{"ev":"parked","task":2,"token":"apples"}`,
+		`{"ev":"finished","task":1,"worker":{"hostname":"worker1"},"completed_by_worker":true,"result":"Success"}`,
+		`{"ev":"parked","task":2,"token":"oranges"}`,
+	}, []string{taskLines[4], taskLines[len(taskLines)-2], taskLines[len(taskLines)-1]})
 }
 
-func taskLogLinesJSON(t *testing.T, lines []*scheduler.TaskLogLine) []string {
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		out = append(out, taskLogLineJSON(t, line))
-	}
-	return out
+// During the startup grace period tasks are parked on the first pool
+// they need, though it has tokens left.
+func TestInMemoryBuildQueueTaskLogStartupGracePeriod(t *testing.T) {
+	recorder := &taskLogRecorder{}
+	configuration := tokenBuildQueueConfigurationForTesting
+	configuration.TaskLog = recorder.record
+	configuration.TokenPoolStartupGracePeriod = 20 * time.Second
+	env := newTokenTestEnv(t, &configuration, time.Unix(1000, 0))
+	env.registerPool("oranges", 1)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
+
+	stream := env.executeAs(env.ctx, &executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"oranges": 1},
+	}, "invocation1")
+	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_QUEUED)
+
+	lines := recorder.all()
+	require.Equal(t, `{"ev":"start","token_pool_startup_grace_period_seconds":20}`, taskLogLineJSON(t, lines[0]))
+	require.Equal(t, uint64(1), lines[0].Seq)
+	require.Equal(t, int64(1000000), lines[0].Boot)
+	require.Equal(t, `{"ev":"parked","task":1,"token":"oranges"}`, taskLogLineJSON(t, lines[2]))
 }
 
-type lockedBuffer struct {
-	lock sync.Mutex
-	b    bytes.Buffer
-}
+// Without a task log, the hooks do nothing.
+func TestInMemoryBuildQueueTaskLogOff(t *testing.T) {
+	configuration := tokenBuildQueueConfigurationForTesting
+	configuration.TaskLog = nil
+	env := newTokenTestEnv(t, &configuration, time.Unix(1000, 0))
+	env.registerPool("oranges", 1)
+	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-	return b.b.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-	return b.b.String()
+	env.execute(&executeOptions{
+		hash:          tokenActionHash(1),
+		operationName: tokenOperationName(1),
+		tokens:        map[string]uint32{"oranges": 1},
+	})
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
+	env.execute(&executeOptions{
+		hash:          tokenActionHash(2),
+		operationName: tokenOperationName(2),
+		tokens:        map[string]uint32{"oranges": 1},
+	})
+	requireExecuting(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(2))
+	env.requirePool("oranges", 1, 0)
 }
 
 // The writer never blocks its caller: lines that do not fit in its
-// buffer are dropped, and the others are written as JSON lines.
+// buffer are dropped. The others are written as JSON lines, also when
+// they are still buffered once the context is done.
 func TestTaskLogWriter(t *testing.T) {
-	var out lockedBuffer
+	var out bytes.Buffer
 	writer := scheduler.NewTaskLogWriter(&out, 2)
 	for seq := uint64(1); seq <= 3; seq++ {
-		writer.Write(&scheduler.TaskLogLine{Seq: seq, Boot: 7, T: "t", Ev: "removed", Task: seq})
+		writer.Write(&scheduler.TaskLogLine{Seq: seq, Boot: 7, T: "t", Ev: "finished", Task: seq})
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		writer.Run(ctx)
-		close(done)
-	}()
-	const expected = `{"seq":1,"boot":7,"t":"t","ev":"removed","task":1}` + "\n" +
-		`{"seq":2,"boot":7,"t":"t","ev":"removed","task":2}` + "\n"
-	require.Eventually(t, func() bool {
-		return out.String() == expected
-	}, 10*time.Second, time.Millisecond)
 	cancel()
-	<-done
-	require.Equal(t, expected, out.String())
+	writer.Run(ctx)
+	require.Equal(t, `{"seq":1,"boot":7,"t":"t","ev":"finished","task":1}`+"\n"+
+		`{"seq":2,"boot":7,"t":"t","ev":"finished","task":2}`+"\n", out.String())
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	remoteexecution "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -139,6 +141,10 @@ func main() {
 		}
 		var taskLog func(line *scheduler.TaskLogLine)
 		if configuration.EnableTaskLog {
+			// Go ends a process that writes to a closed pipe on
+			// standard output. Have such writes fail instead, so
+			// that losing the reader loses lines, not the queue.
+			signal.Ignore(syscall.SIGPIPE)
 			taskLogWriter := scheduler.NewTaskLogWriter(os.Stdout, taskLogBufferedLines)
 			dependenciesGroup.Go(func(ctx context.Context, siblingsGroup, dependenciesGroup program.Group) error {
 				taskLogWriter.Run(ctx)

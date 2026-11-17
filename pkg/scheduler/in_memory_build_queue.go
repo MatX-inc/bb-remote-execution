@@ -566,7 +566,6 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 			// invocation. Simply wait on the operation that
 			// already exists.
 			scq.inFlightDeduplicationsSameInvocation.Inc()
-			bq.logTaskAttached(o, requestMetadata, true)
 			return o.waitExecution(bq, out)
 		}
 
@@ -593,7 +592,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 			panic("Task in unexpected stage")
 		}
 		scq.inFlightDeduplicationsOtherInvocation.Inc()
-		bq.logTaskAttached(o, requestMetadata, true)
+		bq.logTaskAttached(o, requestMetadata)
 		return o.waitExecution(bq, out)
 	}
 
@@ -654,7 +653,7 @@ func (bq *InMemoryBuildQueue) Execute(in *remoteexecution.ExecuteRequest, out re
 	i := scq.getOrCreateInvocation(bq, invocationKeys)
 	o := t.newOperation(bq, in.ExecutionPolicy.GetPriority(), i, false)
 	t.schedule(bq, true)
-	bq.logTaskAttached(o, requestMetadata, false)
+	bq.logTaskAttached(o, requestMetadata)
 	return o.waitExecution(bq, out)
 }
 
@@ -1398,6 +1397,9 @@ func (bq *InMemoryBuildQueue) enter(t time.Time) {
 func (bq *InMemoryBuildQueue) leave() {
 	if enableTokenInvariantChecks {
 		bq.checkTokenInvariants()
+	}
+	if checkTaskLog != nil {
+		checkTaskLog(bq)
 	}
 	bq.lock.Unlock()
 }
@@ -2424,7 +2426,6 @@ func (o *operation) remove(bq *InMemoryBuildQueue) {
 			i.decrementExecutingWorkersCount(bq, t.currentWorker)
 		}
 	}
-	bq.logTaskDetached(o)
 	delete(t.operations, o.invocation)
 }
 
