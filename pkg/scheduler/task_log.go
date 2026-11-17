@@ -16,9 +16,10 @@ import (
 // from which the tasks that were queued, parked on a token pool or
 // executing at any past moment can be found, with their invocations.
 //
-// Lines are numbered per scheduler process: order them by (Boot, Seq).
-// A gap in Seq is a lost line. A restart logs "start" under a new Boot,
-// which ends everything the previous process left open.
+// Lines are numbered per scheduler process: order them by (Boot, Seq),
+// as T may step back by a fraction of a millisecond. A gap in Seq is a
+// lost line. A restart logs "start" under a new Boot, which ends
+// everything the previous process left open.
 
 // Strings chosen by clients and workers are cut to this many bytes.
 const taskLogMaximumStringSizeBytes = 1024

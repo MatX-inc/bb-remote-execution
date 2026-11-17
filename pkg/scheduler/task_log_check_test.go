@@ -49,13 +49,17 @@ type taskLogReplayTask struct {
 	// Set if stage is taskLogStageParked.
 	pool string
 	// Set if the current or last attempt was given to a worker.
-	worker     string
-	operations map[string]struct{}
+	worker string
+	// Set if a worker completed the last attempt.
+	completedByWorker bool
+	operations        map[string]struct{}
 }
 
 type taskLogReplay struct {
 	lastSeq uint64
 	tasks   map[uint64]*taskLogReplayTask
+	// The number of tasks that are not taskLogStageFinished.
+	unfinished int
 	// Tokens held by executing tasks, by taskLogPoolKey().
 	inUse map[string]uint32
 }
@@ -97,14 +101,15 @@ func (r *taskLogReplay) observe(bq *InMemoryBuildQueue, line *TaskLogLine) {
 				operations:         map[string]struct{}{},
 			}
 			r.tasks[line.Task] = t
-		} else if t.stage != taskLogStageFinished || t.worker == "" {
+		} else if t.stage != taskLogStageFinished || !t.completedByWorker {
 			// Only attempts that a worker reported as failed
 			// are retried.
-			fail("task is %s on worker %#v", t.stage, t.worker)
+			fail("task is %s, completed by worker: %t", t.stage, t.completedByWorker)
 		} else if t.instanceNamePrefix != line.InstanceNamePrefix || !slices.Equal(t.tokens, line.Tokens) {
 			fail("retry needs other tokens")
 		}
 		t.stage, t.worker, t.sizeClass = taskLogStageQueued, "", line.SizeClass
+		r.unfinished++
 		return
 	}
 	if !ok {
@@ -150,15 +155,16 @@ func (r *taskLogReplay) observe(bq *InMemoryBuildQueue, line *TaskLogLine) {
 		if string(line.Worker) != t.worker || (t.worker != "") != (t.stage == taskLogStageExecuting) {
 			fail("has worker %#v, but task is %s on worker %#v", string(line.Worker), t.stage, t.worker)
 		}
-		if line.Result == "" {
-			fail("has no result")
+		if line.Result == "" || (line.CompletedByWorker && t.worker == "") {
+			fail("has result %#v, completed by worker: %t", line.Result, line.CompletedByWorker)
 		}
 		if t.stage == taskLogStageExecuting {
 			for _, tokens := range t.tokens {
 				r.inUse[taskLogPoolKey(t.instanceNamePrefix, tokens.Name)] -= tokens.Amount
 			}
 		}
-		t.stage, t.pool = taskLogStageFinished, ""
+		t.stage, t.pool, t.completedByWorker = taskLogStageFinished, "", line.CompletedByWorker
+		r.unfinished--
 	default:
 		fail("unknown event")
 	}
@@ -202,10 +208,8 @@ func (r *taskLogReplay) check(bq *InMemoryBuildQueue) {
 			}
 		}
 	}
-	for id, rt := range r.tasks {
-		if _, ok := unfinished[id]; !ok && rt.stage != taskLogStageFinished {
-			panic(fmt.Sprintf("Task %d no longer exists, but is %s according to the task log", id, rt.stage))
-		}
+	if len(unfinished) != r.unfinished {
+		panic(fmt.Sprintf("%d tasks are not finished, but %d according to the task log", len(unfinished), r.unfinished))
 	}
 
 	for poolKey, p := range bq.tokenPools {
