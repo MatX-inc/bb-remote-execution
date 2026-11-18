@@ -52,6 +52,7 @@ type ApplicationConfiguration struct {
 	ZstdPool                          *zstd.PoolConfiguration                  `protobuf:"bytes,24,opt,name=zstd_pool,json=zstdPool,proto3" json:"zstd_pool,omitempty"`
 	TokenPools                        []*TokenPoolConfiguration                `protobuf:"bytes,100,rep,name=token_pools,json=tokenPools,proto3" json:"token_pools,omitempty"`
 	TokenPoolStartupGracePeriod       *durationpb.Duration                     `protobuf:"bytes,101,opt,name=token_pool_startup_grace_period,json=tokenPoolStartupGracePeriod,proto3" json:"token_pool_startup_grace_period,omitempty"`
+	EnableTaskLog                     bool                                     `protobuf:"varint,102,opt,name=enable_task_log,json=enableTaskLog,proto3" json:"enable_task_log,omitempty"`
 	unknownFields                     protoimpl.UnknownFields
 	sizeCache                         protoimpl.SizeCache
 }
@@ -226,6 +227,13 @@ func (x *ApplicationConfiguration) GetTokenPoolStartupGracePeriod() *durationpb.
 	return nil
 }
 
+func (x *ApplicationConfiguration) GetEnableTaskLog() bool {
+	if x != nil {
+		return x.EnableTaskLog
+	}
+	return false
+}
+
 type TokenPoolConfiguration struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	InstanceNamePrefix string                 `protobuf:"bytes,1,opt,name=instance_name_prefix,json=instanceNamePrefix,proto3" json:"instance_name_prefix,omitempty"`
@@ -374,7 +382,7 @@ var File_github_com_buildbarn_bb_remote_execution_pkg_proto_configuration_bb_sch
 
 const file_github_com_buildbarn_bb_remote_execution_pkg_proto_configuration_bb_scheduler_bb_scheduler_proto_rawDesc = "" +
 	"\n" +
-	"`github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/bb_scheduler/bb_scheduler.proto\x12$buildbarn.configuration.bb_scheduler\x1a6build/bazel/remote/execution/v2/remote_execution.proto\x1aZgithub.com/buildbarn/bb-remote-execution/pkg/proto/configuration/scheduler/scheduler.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/auth/auth.proto\x1aQgithub.com/buildbarn/bb-storage/pkg/proto/configuration/blobstore/blobstore.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1aPgithub.com/buildbarn/bb-storage/pkg/proto/configuration/http/server/server.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/zstd/zstd.proto\x1a\x1egoogle/protobuf/duration.proto\"\xc2\x0f\n" +
+	"`github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/bb_scheduler/bb_scheduler.proto\x12$buildbarn.configuration.bb_scheduler\x1a6build/bazel/remote/execution/v2/remote_execution.proto\x1aZgithub.com/buildbarn/bb-remote-execution/pkg/proto/configuration/scheduler/scheduler.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/auth/auth.proto\x1aQgithub.com/buildbarn/bb-storage/pkg/proto/configuration/blobstore/blobstore.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1aPgithub.com/buildbarn/bb-storage/pkg/proto/configuration/http/server/server.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/zstd/zstd.proto\x1a\x1egoogle/protobuf/duration.proto\"\xea\x0f\n" +
 	"\x18ApplicationConfiguration\x12a\n" +
 	"\x13client_grpc_servers\x18\x03 \x03(\v21.buildbarn.configuration.grpc.ServerConfigurationR\x11clientGrpcServers\x12a\n" +
 	"\x13worker_grpc_servers\x18\x04 \x03(\v21.buildbarn.configuration.grpc.ServerConfigurationR\x11workerGrpcServers\x12\x1f\n" +
@@ -397,7 +405,8 @@ const file_github_com_buildbarn_bb_remote_execution_pkg_proto_configuration_bb_s
 	"\tzstd_pool\x18\x18 \x01(\v2/.buildbarn.configuration.zstd.PoolConfigurationR\bzstdPool\x12]\n" +
 	"\vtoken_pools\x18d \x03(\v2<.buildbarn.configuration.bb_scheduler.TokenPoolConfigurationR\n" +
 	"tokenPools\x12_\n" +
-	"\x1ftoken_pool_startup_grace_period\x18e \x01(\v2\x19.google.protobuf.DurationR\x1btokenPoolStartupGracePeriodJ\x04\b\x02\x10\x03J\x04\b\t\x10\n" +
+	"\x1ftoken_pool_startup_grace_period\x18e \x01(\v2\x19.google.protobuf.DurationR\x1btokenPoolStartupGracePeriod\x12&\n" +
+	"\x0fenable_task_log\x18f \x01(\bR\renableTaskLogJ\x04\b\x02\x10\x03J\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0f\"z\n" +
 	"\x16TokenPoolConfiguration\x120\n" +

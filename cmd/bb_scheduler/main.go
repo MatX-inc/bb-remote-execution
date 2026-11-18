@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	remoteexecution "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -36,6 +38,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// Task log lines that may wait for standard output before being dropped.
+const taskLogBufferedLines = 65536
 
 func main() {
 	program.RunMain(func(ctx context.Context, siblingsGroup, dependenciesGroup program.Group) error {
@@ -134,6 +139,19 @@ func main() {
 			}
 			tokenPoolStartupGracePeriod = d.AsDuration()
 		}
+		var taskLog func(line *scheduler.TaskLogLine)
+		if configuration.EnableTaskLog {
+			// Go ends a process that writes to a closed pipe on
+			// standard output. Have such writes fail instead, so
+			// that losing the reader loses lines, not the queue.
+			signal.Ignore(syscall.SIGPIPE)
+			taskLogWriter := scheduler.NewTaskLogWriter(os.Stdout, taskLogBufferedLines)
+			dependenciesGroup.Go(func(ctx context.Context, siblingsGroup, dependenciesGroup program.Group) error {
+				taskLogWriter.Run(ctx)
+				return nil
+			})
+			taskLog = taskLogWriter.Write
+		}
 
 		// Create in-memory build queue.
 		// TODO: Make timeouts configurable.
@@ -156,6 +174,7 @@ func main() {
 				WorkerTaskRetryCount:                9,
 				WorkerWithNoSynchronizationsTimeout: time.Minute,
 				TokenPoolStartupGracePeriod:         tokenPoolStartupGracePeriod,
+				TaskLog:                             taskLog,
 			},
 			int(configuration.MaximumMessageSizeBytes),
 			actionRouter,
