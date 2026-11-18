@@ -52,7 +52,8 @@ type taskLogReplayTask struct {
 	worker string
 	// Set if a worker completed the last attempt.
 	completedByWorker bool
-	operations        map[string]struct{}
+	// The priority of every operation.
+	operations map[string]int32
 }
 
 type taskLogReplay struct {
@@ -79,6 +80,11 @@ func (r *taskLogReplay) observe(bq *InMemoryBuildQueue, line *TaskLogLine) {
 		fail("follows line %d", r.lastSeq)
 	}
 	r.lastSeq = line.Seq
+	for _, s := range []string{line.InstanceName, line.TargetID, line.ToolInvocationID, line.CorrelatedInvocationsID, line.ActionMnemonic, line.StatusMessage} {
+		if len(s) > taskLogMaximumStringSizeBytes {
+			fail("has a string of %d bytes", len(s))
+		}
+	}
 	if line.Boot != bq.taskLog.boot || line.T == "" {
 		fail("has boot %d and time %#v", line.Boot, line.T)
 	}
@@ -98,7 +104,7 @@ func (r *taskLogReplay) observe(bq *InMemoryBuildQueue, line *TaskLogLine) {
 			t = &taskLogReplayTask{
 				instanceNamePrefix: line.InstanceNamePrefix,
 				tokens:             line.Tokens,
-				operations:         map[string]struct{}{},
+				operations:         map[string]int32{},
 			}
 			r.tasks[line.Task] = t
 		} else if t.stage != taskLogStageFinished || !t.completedByWorker {
@@ -123,7 +129,7 @@ func (r *taskLogReplay) observe(bq *InMemoryBuildQueue, line *TaskLogLine) {
 		if _, ok := t.operations[line.Operation]; ok || line.Operation == "" {
 			fail("operation %#v is not new", line.Operation)
 		}
-		t.operations[line.Operation] = struct{}{}
+		t.operations[line.Operation] = line.Priority
 	case "parked":
 		if t.stage == taskLogStageExecuting {
 			fail("task is executing")
@@ -185,8 +191,12 @@ func (r *taskLogReplay) check(bq *InMemoryBuildQueue) {
 		if !ok {
 			fail("is not in the task log")
 		}
-		if _, ok := rt.operations[o.name]; !ok && !slices.Equal(o.invocation.invocationKeys, scheduler_invocation.BackgroundLearningKeys) {
-			fail("operation is not in the task log")
+		if priority, ok := rt.operations[o.name]; !ok {
+			if !slices.Equal(o.invocation.invocationKeys, scheduler_invocation.BackgroundLearningKeys) {
+				fail("operation is not in the task log")
+			}
+		} else if priority != o.priority {
+			fail("operation has priority %d, but %d according to the task log", o.priority, priority)
 		}
 
 		stage, pool, worker := taskLogStageQueued, "", ""

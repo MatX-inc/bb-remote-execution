@@ -175,7 +175,7 @@ type executeOptions struct {
 	noRouting bool
 }
 
-func (tokenTestEnv) buildAction(o *executeOptions) (*remoteexecution.Action, *remoteexecution.Action) {
+func buildTokenAction(o *executeOptions) (*remoteexecution.Action, *remoteexecution.Action) {
 	basePlatform := o.platform
 	if basePlatform == nil {
 		basePlatform = platformForTesting
@@ -294,7 +294,7 @@ func (env *tokenTestEnv) executeExpectingError(o *executeOptions) error {
 }
 
 func (env *tokenTestEnv) executeStream(ctx context.Context, o *executeOptions) (remoteexecution.Execution_ExecuteClient, error) {
-	action, strippedAction := env.buildAction(o)
+	action, strippedAction := buildTokenAction(o)
 	env.expectExecute(o, action, strippedAction)
 	return env.client.Execute(ctx, &remoteexecution.ExecuteRequest{
 		InstanceName: o.getInstanceName(),
