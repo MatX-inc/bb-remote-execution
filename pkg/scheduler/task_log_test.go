@@ -391,3 +391,19 @@ func TestTaskLogWriter(t *testing.T) {
 	require.Equal(t, `{"seq":1,"boot":7,"t":"t","ev":"finished","task":1}`+"\n"+
 		`{"seq":2,"boot":7,"t":"t","ev":"finished","task":2}`+"\n", out.String())
 }
+
+type blockingWriter struct{}
+
+func (blockingWriter) Write(p []byte) (int, error) {
+	select {}
+}
+
+func TestTaskLogWriterBlockedSink(t *testing.T) {
+	writer := scheduler.NewTaskLogWriter(blockingWriter{}, 2)
+	writer.Write(&scheduler.TaskLogLine{Seq: 1})
+
+	// Shutdown must not wait for a sink that never takes the line.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	writer.Run(ctx)
+}

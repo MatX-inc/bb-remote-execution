@@ -24,6 +24,9 @@ import (
 // Strings chosen by clients and workers are cut to this many bytes.
 const taskLogMaximumStringSizeBytes = 1024
 
+// How long shutdown waits for buffered lines to be written.
+const taskLogDrainTimeout = time.Second
+
 var inMemoryBuildQueueTaskLogLinesLostTotal = prometheus.NewCounter(
 	prometheus.CounterOpts{
 		Namespace: "buildbarn",
@@ -281,21 +284,31 @@ func (lw *TaskLogWriter) writeLine(line *TaskLogLine) {
 }
 
 // Run writes lines until the context is done, and then the lines that
-// are still buffered. It does not return while the sink blocks.
+// are still buffered. A sink that blocks delays its return by at most
+// taskLogDrainTimeout.
 func (lw *TaskLogWriter) Run(ctx context.Context) {
-	for {
-		select {
-		case line := <-lw.lines:
-			lw.writeLine(line)
-		case <-ctx.Done():
-			for {
-				select {
-				case line := <-lw.lines:
-					lw.writeLine(line)
-				default:
-					return
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case line := <-lw.lines:
+				lw.writeLine(line)
+			case <-ctx.Done():
+				for {
+					select {
+					case line := <-lw.lines:
+						lw.writeLine(line)
+					default:
+						return
+					}
 				}
 			}
 		}
+	}()
+	<-ctx.Done()
+	select {
+	case <-done:
+	case <-time.After(taskLogDrainTimeout):
 	}
 }
