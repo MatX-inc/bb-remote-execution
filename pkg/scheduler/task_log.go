@@ -17,11 +17,12 @@ import (
 // executing at any past moment can be found, with their invocations.
 //
 // Lines are numbered per scheduler process: order them by (Boot, Seq),
-// as T may step back by a fraction of a millisecond. A gap in Seq is a
-// lost line. A restart logs "start" under a new Boot, which ends
-// everything the previous process left open.
+// as T is wall clock time, which may step back. A gap in Seq is a lost
+// line, as may be the last lines of a Boot. A restart logs "start"
+// under a new Boot, which ends everything the previous process left
+// open.
 
-// Strings chosen by clients and workers are cut to this many bytes.
+// Strings chosen by clients are cut to this many bytes.
 const taskLogMaximumStringSizeBytes = 1024
 
 // How long shutdown waits for buffered lines to be written.
@@ -50,10 +51,12 @@ type TaskLogTokens struct {
 //   - "queued": a task was queued, or queued again to be retried on
 //     the largest size class. Describes the task.
 //   - "attached": an Execute() call started waiting for a task under
-//     a new operation. Names the invocation. Tasks the scheduler
-//     queues by itself, to learn their size class, have none.
-//   - "parked": a queued task started waiting for the token pool
+//     a new operation. Names the invocation. It stays attached until
+//     "finished", even if the call ends. Tasks the scheduler queues by
+//     itself, to learn their size class, have none.
+//   - "parked": a queued task started waiting on the token pool
 //     Token, until its next "parked", "executing" or "finished" line.
+//     It waits for tokens or, once the pool has them, for a worker.
 //     During the startup grace period this is the first pool the task
 //     needs, whether or not it has tokens left.
 //   - "executing": a worker took the task, and the task its tokens.

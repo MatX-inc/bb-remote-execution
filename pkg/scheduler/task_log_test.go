@@ -197,11 +197,14 @@ func TestInMemoryBuildQueueTaskLogAbandonQueued(t *testing.T) {
 	env, recorder := newTaskLogTestEnv(t)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, idleWorkerState()))
 
+	// Strings chosen by the client are cut to 1024 bytes.
 	ctxWithCancel, cancel := context.WithCancel(env.ctx)
 	stream := env.executeAs(ctxWithCancel, &executeOptions{
 		hash:          tokenActionHash(1),
 		operationName: tokenOperationName(1),
-	}, "invocation1")
+		instanceName:  "main/tenant",
+		priority:      7,
+	}, strings.Repeat("i", 1025))
 	requireOperationStage(t, stream, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_QUEUED)
 
 	cancel()
@@ -214,8 +217,8 @@ func TestInMemoryBuildQueueTaskLogAbandonQueued(t *testing.T) {
 	require.Empty(t, env.listOperations(remoteexecution.ExecutionStage_UNKNOWN, ""))
 
 	require.Equal(t, []string{
-		`{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"instance_name":"main","instance_name_prefix":"main","target_id":"//pkg:target"}`,
-		`{"ev":"attached","task":1,"operation":"00000000-0000-0000-0000-000000000001","tool_invocation_id":"invocation1","correlated_invocations_id":"correlated-invocation1","action_mnemonic":"TestRunner"}`,
+		`{"ev":"queued","task":1,"action_hash":"00000000000000000000000000000001","action_size_bytes":123,"instance_name":"main/tenant","instance_name_prefix":"main","target_id":"//pkg:target"}`,
+		`{"ev":"attached","task":1,"operation":"00000000-0000-0000-0000-000000000001","priority":7,"tool_invocation_id":"` + strings.Repeat("i", 1024) + `","correlated_invocations_id":"correlated-` + strings.Repeat("i", 1013) + `","action_mnemonic":"TestRunner"}`,
 		`{"ev":"finished","task":1,"result":"Failure","grpc_code":"Canceled","status_message":"Task no longer has any waiting clients"}`,
 	}, recorder.taskLines(t))
 }

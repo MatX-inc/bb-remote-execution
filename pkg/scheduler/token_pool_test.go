@@ -150,6 +150,9 @@ func tokenOperationName(n int) string {
 type executeOptions struct {
 	hash          string
 	operationName string
+	// Defaults to "main".
+	instanceName string
+	priority     int32
 	// Token requirements, added to the base platform as
 	// "token:<name>" properties.
 	tokens map[string]uint32
@@ -204,13 +207,20 @@ func (tokenTestEnv) buildAction(o *executeOptions) (*remoteexecution.Action, *re
 	return action, strippedAction
 }
 
+func (o *executeOptions) getInstanceName() string {
+	if o.instanceName == "" {
+		return "main"
+	}
+	return o.instanceName
+}
+
 // expectExecute installs the mock expectations for one Execute() call
 // and returns the learner the selector will hand out.
 func (env *tokenTestEnv) expectExecute(o *executeOptions, action, strippedAction *remoteexecution.Action) *mock.MockLearner {
 	t := env.t
 	env.cas.EXPECT().Get(
 		gomock.Any(),
-		digest.MustNewDigest("main", remoteexecution.DigestFunction_MD5, o.hash, 123),
+		digest.MustNewDigest(o.getInstanceName(), remoteexecution.DigestFunction_MD5, o.hash, 123),
 	).Return(buffer.NewProtoBufferFromProto(action, buffer.UserProvided))
 	if o.noRouting {
 		return nil
@@ -287,11 +297,12 @@ func (env *tokenTestEnv) executeStream(ctx context.Context, o *executeOptions) (
 	action, strippedAction := env.buildAction(o)
 	env.expectExecute(o, action, strippedAction)
 	return env.client.Execute(ctx, &remoteexecution.ExecuteRequest{
-		InstanceName: "main",
+		InstanceName: o.getInstanceName(),
 		ActionDigest: &remoteexecution.Digest{
 			Hash:      o.hash,
 			SizeBytes: 123,
 		},
+		ExecutionPolicy: &remoteexecution.ExecutionPolicy{Priority: o.priority},
 	})
 }
 
