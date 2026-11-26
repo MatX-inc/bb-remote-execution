@@ -957,7 +957,7 @@ func (bq *InMemoryBuildQueue) ListOperations(ctx context.Context, request *build
 	for name, o := range bq.operationsNameMap {
 		if (invocationKey == nil || o.invocation.hasInvocationKey(*invocationKey)) &&
 			(request.FilterStage == remoteexecution.ExecutionStage_UNKNOWN || request.FilterStage == o.task.getStage()) &&
-			(filterTokenPoolKey == nil || o.task.matchesTokenFilter(*filterTokenPoolKey, request.FilterTokenBlockedOnly)) {
+			(filterTokenPoolKey == nil || o.task.matchesTokenFilter(bq, *filterTokenPoolKey, request.FilterTokenBlockedOnly)) {
 			nameList = append(nameList, name)
 		}
 	}
@@ -1387,6 +1387,7 @@ func (bq *InMemoryBuildQueue) leave() {
 	if enableTokenInvariantChecks {
 		bq.checkTokenInvariants()
 	}
+	bq.updateBlockedTasksGauges()
 	bq.lock.Unlock()
 }
 
@@ -2020,9 +2021,12 @@ func (i *invocation) getInvocationState(bq *InMemoryBuildQueue) *buildqueuestate
 		}
 	}
 
+	// Parked operations that fit wait only for a worker, so they
+	// are reported as queued rather than blocked.
+	fittingDirect, fittingIndirect := i.countFittingParkedOperations(bq)
 	queuedOperationsCount := &buildqueuestate.InvocationState_InvocationObjectCount{
-		Direct:   uint32(i.queuedOperations.Len()),
-		Indirect: i.getIndirectQueuedOperationsCount(),
+		Direct:   uint32(i.queuedOperations.Len()) + fittingDirect,
+		Indirect: i.getIndirectQueuedOperationsCount() + fittingIndirect,
 	}
 
 	return &buildqueuestate.InvocationState{
@@ -2033,7 +2037,7 @@ func (i *invocation) getInvocationState(bq *InMemoryBuildQueue) *buildqueuestate
 		ExecutingWorkersCount:         uint32(len(i.executingWorkers)),
 		IdleWorkersCount:              i.idleWorkersCount,
 		IdleSynchronizingWorkersCount: uint32(len(i.idleSynchronizingWorkers)),
-		BlockedOperationsCount:        i.blockedOperationsCount,
+		BlockedOperationsCount:        i.blockedOperationsCount - fittingDirect - fittingIndirect,
 	}
 }
 
@@ -2439,7 +2443,7 @@ func (o *operation) getOperationState(bq *InMemoryBuildQueue) *buildqueuestate.O
 		DigestFunction:     t.desiredState.DigestFunction,
 		TokenRequirements:  t.getTokenRequirementsState(),
 	}
-	if p := t.blockedPool; p != nil {
+	if p := bq.waitingPool(t); p != nil {
 		s.BlockedOnToken = p.key.name
 	}
 	switch t.getStage() {

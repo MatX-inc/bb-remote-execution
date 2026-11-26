@@ -885,11 +885,26 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 
 	// Completion on one platform unblocks the other. The worker
 	// of the first platform has nothing to do. The task stays
-	// parked until a worker of its platform asks for work.
+	// parked until a worker of its platform asks for work, but
+	// as it fits, it is reported as queued rather than blocked.
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("oranges", 0, 1)
+	env.requirePool("oranges", 0, 0)
+	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
+	require.Empty(t, env.listOperationsUnderPrefix(remoteexecution.ExecutionStage_QUEUED, "main", "oranges", true))
+	response, err := env.bq.ListPlatformQueues(env.ctx, &emptypb.Empty{})
+	require.NoError(t, err)
+	var queued, blocked uint32
+	for _, pq := range response.PlatformQueues {
+		for _, scq := range pq.SizeClassQueues {
+			root := scq.RootInvocation
+			queued += root.QueuedOperationsCount.Direct + root.QueuedOperationsCount.Indirect
+			blocked += root.BlockedOperationsCount
+		}
+	}
+	require.Equal(t, uint32(1), queued)
+	require.Equal(t, uint32(0), blocked)
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("oranges", 1, 0)
@@ -1413,9 +1428,10 @@ func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 
 	// The grace period ends at 1020. Any interaction with the
-	// scheduler past that time runs the cleanup queue.
+	// scheduler past that time runs the cleanup queue. The task
+	// now fits and waits only for a worker.
 	env.advance(15 * time.Second)
-	env.requirePool("oranges", 0, 1)
+	env.requirePool("oranges", 0, 0)
 	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("oranges", 1, 0)
