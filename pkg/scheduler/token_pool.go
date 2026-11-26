@@ -236,6 +236,7 @@ func (bq *InMemoryBuildQueue) sortedTokenPools() []*tokenPool {
 
 func (bq *InMemoryBuildQueue) getTokenPoolStates() []*buildqueuestate.TokenPoolState {
 	pools := bq.sortedTokenPools()
+	waiting := bq.countWaitingTasks()
 	states := make([]*buildqueuestate.TokenPoolState, 0, len(pools))
 	for _, p := range pools {
 		states = append(states, &buildqueuestate.TokenPoolState{
@@ -243,7 +244,7 @@ func (bq *InMemoryBuildQueue) getTokenPoolStates() []*buildqueuestate.TokenPoolS
 			Name:               p.key.name,
 			Capacity:           p.capacity,
 			InUse:              p.inUse,
-			BlockedTasksCount:  uint32(len(p.blocked)),
+			BlockedTasksCount:  waiting[p],
 		})
 	}
 	return states
@@ -352,6 +353,76 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 	return nil
 }
 
+// waitingPool returns the pool a parked task waits for, or nil if the
+// task is not parked or the pools can satisfy it. A parked task that
+// fits waits only for a worker of its size class queue, and is
+// reported as queued. The pool the task is parked on is preferred,
+// so that the reported pool matches its FIFO while it is short.
+func (bq *InMemoryBuildQueue) waitingPool(t *task) *tokenPool {
+	if t.blockedPool == nil {
+		return nil
+	}
+	if bq.tokenPoolStartupGraceActive {
+		return t.blockedPool
+	}
+	for _, r := range t.tokenRequirements {
+		if r.pool == t.blockedPool && !r.fits() {
+			return t.blockedPool
+		}
+	}
+	return t.firstShortPool()
+}
+
+// countWaitingTasks returns the number of parked tasks that wait for
+// each pool.
+func (bq *InMemoryBuildQueue) countWaitingTasks() map[*tokenPool]uint32 {
+	waiting := map[*tokenPool]uint32{}
+	for _, p := range bq.tokenPools {
+		for _, t := range p.blocked {
+			if q := bq.waitingPool(t); q != nil {
+				waiting[q]++
+			}
+		}
+	}
+	return waiting
+}
+
+// updateBlockedTasksGauges is called whenever the lock is released, as
+// whether a parked task waits changes with every token taken or
+// returned, not only when it is parked or unparked.
+func (bq *InMemoryBuildQueue) updateBlockedTasksGauges() {
+	waiting := bq.countWaitingTasks()
+	for _, p := range bq.tokenPools {
+		p.blockedTasksGauge.Set(float64(waiting[p]))
+	}
+}
+
+// countFittingParkedOperations returns the number of operations of
+// parked tasks that do not wait for any pool, in this invocation and
+// in its descendants.
+func (i *invocation) countFittingParkedOperations(bq *InMemoryBuildQueue) (direct, indirect uint32) {
+	for _, p := range bq.tokenPools {
+		for _, t := range p.blocked {
+			if bq.waitingPool(t) != nil {
+				continue
+			}
+			for iOperation := range t.operations {
+				for j := iOperation; j != nil; j = j.parent {
+					if j == i {
+						if iOperation == i {
+							direct++
+						} else {
+							indirect++
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+	return direct, indirect
+}
+
 // firstShortPool returns the first pool of a task that cannot satisfy
 // it, or nil if the task may take its tokens.
 func (t *task) firstShortPool() *tokenPool {
@@ -414,7 +485,6 @@ func (p *tokenPool) insertBlockedTask(t *task) {
 		return p.blocked[i].tokenSequence > t.tokenSequence
 	})
 	p.blocked = slices.Insert(p.blocked, idx, t)
-	p.blockedTasksGauge.Set(float64(len(p.blocked)))
 }
 
 func (p *tokenPool) removeBlockedTask(t *task) {
@@ -427,7 +497,6 @@ func (p *tokenPool) removeBlockedTask(t *task) {
 	}
 	p.blocked = slices.Delete(p.blocked, idx, idx+1)
 	t.blockedPool = nil
-	p.blockedTasksGauge.Set(float64(len(p.blocked)))
 }
 
 // acquireTokens is called when a task is assigned to a worker. The
@@ -493,10 +562,11 @@ func (t *task) unpark() {
 
 // matchesTokenFilter implements the token related filters of
 // ListOperations(): the task must require the named pool and, if
-// requested, be parked on it.
-func (t *task) matchesTokenFilter(key tokenPoolKey, blockedOnly bool) bool {
+// requested, wait for it.
+func (t *task) matchesTokenFilter(bq *InMemoryBuildQueue, key tokenPoolKey, blockedOnly bool) bool {
 	if blockedOnly {
-		return t.blockedPool != nil && t.blockedPool.key == key
+		p := bq.waitingPool(t)
+		return p != nil && p.key == key
 	}
 	for _, r := range t.tokenRequirements {
 		if r.pool.key == key {
