@@ -2565,7 +2565,7 @@ func (t *task) schedule(bq *InMemoryBuildQueue, initial bool) {
 
 // assignOrEnqueue is the part of schedule() that runs once the token
 // gate has been passed. dispatchParkedTasks() calls it directly for a
-// parked task it lets take its tokens.
+// parked task that fits.
 func (t *task) assignOrEnqueue(bq *InMemoryBuildQueue, initial bool) {
 	// Check whether there are idle workers that are synchronizing
 	// against the scheduler on which we can schedule the operation
@@ -2999,18 +2999,12 @@ func (w *worker) assignQueuedTask(bq *InMemoryBuildQueue, t *task, stickinessRet
 // assignNextQueuedTask determines which queued task is the best
 // candidate for execution and assigns it to the current task.
 //
-// Parked tasks of the size class queue that may take their tokens go
-// first, as they waited longer than any token-requiring task still in
-// the invocation heaps. Heap candidates whose token requirements cannot
-// be satisfied are parked, after which the search restarts, so that
-// token-free work behind them is not held up.
+// Candidates whose token requirements cannot be satisfied are parked,
+// after which the search restarts, so that token-free work behind them
+// is not held up.
 func (w *worker) assignNextQueuedTask(bq *InMemoryBuildQueue, scq *sizeClassQueue, workerID map[string]string) bool {
 	pq := scq.platformQueue
 	for {
-		if t := bq.dispatchParkedTasks(scq, false); t != nil {
-			w.assignQueuedTask(bq, t, 0)
-			return true
-		}
 		t, stickinessRetained := w.findNextQueuedTask(bq, scq, pq)
 		if t == nil {
 			return false

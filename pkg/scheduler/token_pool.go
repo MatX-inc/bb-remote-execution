@@ -86,8 +86,8 @@ type tokenPool struct {
 
 	// Tasks in the QUEUED stage that wait for this pool, ordered
 	// by task.tokenSequence: the order in which they first became
-	// blocked on any pool. dispatchParkedTasks() decides when they
-	// take tokens.
+	// blocked on any pool. dispatchParkedTasks() unparks them once
+	// they fit.
 	blocked []*task
 
 	capacityGauge     prometheus.Gauge
@@ -254,7 +254,7 @@ func (bq *InMemoryBuildQueue) getTokenPoolStates() []*buildqueuestate.TokenPoolS
 // grace period are now reconsidered.
 func (bq *InMemoryBuildQueue) endTokenPoolStartupGrace() {
 	bq.tokenPoolStartupGraceActive = false
-	bq.dispatchParkedTasks(nil, false)
+	bq.dispatchParkedTasks()
 }
 
 // firstInsufficientPool returns the pool that prevents a task that is
@@ -279,41 +279,32 @@ func (r tokenRequirement) fits() bool {
 	return uint64(r.pool.inUse)+uint64(r.amount) <= uint64(r.pool.capacity)
 }
 
-// dispatchParkedTasks hands tokens to parked tasks that a worker can
-// run right now. Tasks of smaller size classes go first; within a size
-// class, tasks go in the order in which they first became blocked.
-// Size classes of different platform queues are compared by number.
-// This order decides only among tasks that fit: a larger size class
-// task may take tokens that a smaller one needs more of than are free.
-// In this order:
+// dispatchParkedTasks unparks every parked task that the pools can
+// satisfy, so that a task stays parked only while it is short of
+// tokens. Tasks of smaller size classes go first; within a size class,
+// tasks go in the order in which they first became blocked. Size
+// classes of different platform queues are compared by number. This
+// order decides only among tasks that fit: a larger size class task may
+// take tokens that a smaller one needs more of than are free.
 //
-//   - A task that the pools cannot satisfy right now is passed over
-//     without holding any tokens, and does not delay the tasks behind
-//     it. A steady stream of requests for few tokens may thus starve a
-//     request for many, or for several pools; that is accepted, as
-//     tokens set aside for it would leave licenses unused.
-//   - A task that the pools can satisfy, but for which no worker is
-//     available, is passed over without holding any tokens. Setting
-//     tokens aside for it would leave them unused for as long as the
-//     workers of its size class queue are busy, while workers of
-//     other size class queues sit idle next to tasks parked for them.
-//   - A task that the pools can satisfy and for which a worker is
-//     available is assigned to an idle synchronizing worker.
+// A task that the pools cannot satisfy is passed over without holding
+// any tokens, and does not delay the tasks behind it. A steady stream
+// of requests for few tokens may thus starve a request for many, or for
+// several pools; that is accepted, as tokens set aside for it would
+// leave licenses unused.
 //
-// When pullerSCQ is set, a worker of that size class queue is looking
-// for work, and the first task of that size class queue that may run
-// is returned for the caller to assign to the worker. When dryRun is
-// set, the first task that may run is returned and nothing changes.
-func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dryRun bool) *task {
-	if bq.tokenPoolStartupGraceActive || bq.allTokenPoolsExhausted() {
-		return nil
+// A task that fits is scheduled like a new one: assigned to an idle
+// synchronizing worker, taking its tokens, or else enqueued without
+// holding any. Unparked tasks thus compete with never parked ones, and
+// a worker that pulls an enqueued task the pools can no longer satisfy
+// parks it again under its original sequence number.
+func (bq *InMemoryBuildQueue) dispatchParkedTasks() {
+	if bq.tokenPoolStartupGraceActive {
+		return
 	}
 	var parked []*task
 	for _, p := range bq.tokenPools {
 		parked = append(parked, p.blocked...)
-	}
-	if len(parked) == 0 {
-		return nil
 	}
 	slices.SortFunc(parked, func(a, b *task) int {
 		return cmp.Or(
@@ -324,32 +315,23 @@ func (bq *InMemoryBuildQueue) dispatchParkedTasks(pullerSCQ *sizeClassQueue, dry
 
 	for _, t := range parked {
 		if q := t.firstShortPool(); q != nil {
-			if !dryRun && q != t.blockedPool {
+			if q != t.blockedPool {
 				// Report the pool the task waits for.
 				t.blockedPool.removeBlockedTask(t)
 				q.insertBlockedTask(t)
 			}
 			continue
 		}
-		scq := t.getCurrentSizeClassQueue()
-		hasWorker := scq.rootInvocation.hasIdleSynchronizingWorkers()
-		if scq == pullerSCQ || (dryRun && hasWorker) {
-			return t
-		}
-		if hasWorker {
-			// Unparking after the assignment keeps the
-			// task's invocations active throughout. Unlike
-			// at Execute(), clients already wait for the
-			// task, so they must be told it started.
-			t.assignOrEnqueue(bq, false)
-			t.unpark()
+		// Unparking after scheduling keeps the task's
+		// invocations active throughout.
+		t.assignOrEnqueue(bq, false)
+		t.unpark()
+		if t.currentWorker != nil {
+			// Unlike at Execute(), clients already wait for
+			// the task, so they must be told it started.
 			t.reportNonFinalStageChange()
-			if bq.allTokenPoolsExhausted() {
-				return nil
-			}
 		}
 	}
-	return nil
 }
 
 // firstShortPool returns the first pool of a task that cannot satisfy
@@ -361,21 +343,6 @@ func (t *task) firstShortPool() *tokenPool {
 		}
 	}
 	return nil
-}
-
-func (bq *InMemoryBuildQueue) allTokenPoolsExhausted() bool {
-	for _, p := range bq.tokenPools {
-		if p.inUse < p.capacity {
-			return false
-		}
-	}
-	return true
-}
-
-// hasIdleSynchronizingWorkers returns whether a worker is blocked in
-// Synchronize() on this invocation or one of its children.
-func (i *invocation) hasIdleSynchronizingWorkers() bool {
-	return len(i.idleSynchronizingWorkers) > 0 || i.idleSynchronizingWorkersChildren.Len() > 0
 }
 
 // cancelBlockedTasks completes all parked tasks belonging to a size
@@ -455,7 +422,7 @@ func (t *task) releaseTokens(bq *InMemoryBuildQueue) {
 		r.pool.inUse -= r.amount
 		r.pool.inUseGauge.Set(float64(r.pool.inUse))
 	}
-	bq.dispatchParkedTasks(nil, false)
+	bq.dispatchParkedTasks()
 }
 
 // park removes a task's operations from the invocation heaps and
@@ -581,6 +548,9 @@ func (bq *InMemoryBuildQueue) checkTokenInvariants() {
 			if t.currentWorker != nil || t.executeResponse != nil {
 				panic("Parked task is not in the QUEUED stage")
 			}
+			if !bq.tokenPoolStartupGraceActive && t.firstShortPool() == nil {
+				panic("Parked task fits in its token pools")
+			}
 			for i, o := range t.operations {
 				if o.queueIndex >= 0 {
 					panic("Parked operation is still in an invocation heap")
@@ -590,10 +560,6 @@ func (bq *InMemoryBuildQueue) checkTokenInvariants() {
 				}
 			}
 		}
-	}
-
-	if bq.dispatchParkedTasks(nil, true) != nil {
-		panic("A parked task can run on an idle synchronizing worker, but was not assigned to it")
 	}
 
 	for _, scq := range bq.sizeClassQueues {
