@@ -764,11 +764,19 @@ func TestInMemoryBuildQueueTokenPoolsExhaustedPoolDoesNotBlockOthers(t *testing.
 	env.requirePool("oranges", 2, 2)
 	env.requirePool("apples", 0, 0)
 
-	// Releasing a token of "oranges" runs the first of them.
+	// Releasing a token of "oranges" lets both fit, so both are
+	// enqueued, and the worker runs the first of them.
 	env.advance(time.Second)
 	requireExecuting(t, env.synchronize("worker3", platformForTesting, 0, completedWorkerState(tokenActionHash(5), successfulExecuteResponse())), tokenActionHash(2))
-	env.requirePool("oranges", 2, 1)
+	env.requirePool("oranges", 2, 0)
 	env.requirePool("apples", 1, 0)
+	require.Empty(t, env.operation(tokenOperationName(3)).BlockedOnToken)
+
+	// A worker that pulls the other one parks it again.
+	env.advance(time.Second)
+	requireIdle(t, env.synchronize("worker4", platformForTesting, 0, idleWorkerState()))
+	require.Equal(t, "apples", env.operation(tokenOperationName(3)).BlockedOnToken)
+	env.requirePool("apples", 1, 1)
 }
 
 // When one release lets several parked tasks fit, the one parked first
@@ -884,12 +892,13 @@ func TestInMemoryBuildQueueTokenPoolsSharedAcrossPlatformQueues(t *testing.T) {
 	env.requirePool("oranges", 1, 1)
 
 	// Completion on one platform unblocks the other. The worker
-	// of the first platform has nothing to do. The task stays
-	// parked until a worker of its platform asks for work.
+	// of the first platform has nothing to do. The task waits in
+	// its platform's queue until a worker of it asks for work.
 	env.advance(time.Second)
 	requireIdle(t, env.synchronize("worker1", platformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
-	env.requirePool("oranges", 0, 1)
+	env.requirePool("oranges", 0, 0)
+	require.Empty(t, env.operation(tokenOperationName(2)).BlockedOnToken)
 	requireExecuting(t, env.synchronize("worker2", otherPlatformForTesting, 0, idleWorkerState()), tokenActionHash(2))
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("oranges", 1, 0)
@@ -950,16 +959,15 @@ func TestInMemoryBuildQueueTokenPoolsBusyPlatformQueueHoldsNoTokens(t *testing.T
 	requireExecuting(t, env.synchronize("idle", platformForTesting, 0, completedWorkerState(tokenActionHash(2), successfulExecuteResponse())), tokenActionHash(5))
 	requireOperationStage(t, streamIdle, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, streams[5], tokenOperationName(5), tokenActionHash(5), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("oranges", 2, 3)
+	env.requirePool("oranges", 2, 0)
 
 	// The busy platform queue's worker finishes and takes its
-	// oldest waiting task: the order among the tasks that can run
-	// is still the order in which they were parked.
+	// oldest waiting task from its queue.
 	env.advance(time.Second)
 	requireExecuting(t, env.synchronize("busy", otherPlatformForTesting, 0, completedWorkerState(tokenActionHash(1), successfulExecuteResponse())), tokenActionHash(3))
 	requireOperationStage(t, streamBusy, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_COMPLETED)
 	requireOperationStage(t, streams[3], tokenOperationName(3), tokenActionHash(3), remoteexecution.ExecutionStage_EXECUTING)
-	env.requirePool("oranges", 2, 2)
+	env.requirePool("oranges", 2, 0)
 }
 
 // When workers of several size classes wait for the same token, the
@@ -1413,9 +1421,10 @@ func TestInMemoryBuildQueueTokenPoolsStartupGrace(t *testing.T) {
 	requireOperationStage(t, stream2, tokenOperationName(2), tokenActionHash(2), remoteexecution.ExecutionStage_EXECUTING)
 
 	// The grace period ends at 1020. Any interaction with the
-	// scheduler past that time runs the cleanup queue.
+	// scheduler past that time runs the cleanup queue, which
+	// enqueues the parked task.
 	env.advance(15 * time.Second)
-	env.requirePool("oranges", 0, 1)
+	env.requirePool("oranges", 0, 0)
 	requireExecuting(t, env.synchronize("worker2", platformForTesting, 0, idleWorkerState()), tokenActionHash(1))
 	requireOperationStage(t, stream1, tokenOperationName(1), tokenActionHash(1), remoteexecution.ExecutionStage_EXECUTING)
 	env.requirePool("oranges", 1, 0)
